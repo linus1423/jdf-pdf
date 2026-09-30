@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
 )
 
-from ..core import elements, geometry, marks, spine, tabs
+from ..core import elements, geometry, impose, marks, spine, tabs
 from ..core.history import History
 from ..core.jdf import JobTicket
 from ..core.media import MM, MediaCatalog
@@ -35,7 +35,7 @@ from .dialogs import BleedDialog, BoxesDialog, MediaCatalogDialog, ScaleDialog, 
 from .dialogs_elements import BleedTabDialog, ElementDialog, MarksDialog, SpineDialog, TabSheetDialog
 from .i18n import LANGUAGES, Translator
 from .pageview import PageView
-from .panels import FinishingPanel, JobPanel, MediaPanel, OutputPanel, SectionsPanel
+from .panels import FinishingPanel, JobPanel, LayoutPanel, MediaPanel, OutputPanel, SectionsPanel
 
 PAGE_ROLE = Qt.ItemDataRole.UserRole
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
@@ -117,6 +117,7 @@ class MainWindow(QMainWindow):
         self.catalog_path = catalog_path
         self.catalog = MediaCatalog.load(catalog_path)
         self.doc: PdfDocument | None = None
+        self.view_doc: PdfDocument | None = None  # angezeigtes Dokument (Einzelseiten oder Bögen)
         self.history: History[bytes] = History()
 
         self.pages = PageList(self._reorder, self.insert_files)
@@ -148,13 +149,18 @@ class MainWindow(QMainWindow):
         self.media.changed.connect(self._refresh_media_colors)
         self.media.catalog_requested.connect(self.edit_catalog)
         self.finishing = FinishingPanel(tr)
+        self.finishing.changed.connect(lambda: self._show_page(self.pages.currentRow()))
+        self.layout_panel = LayoutPanel(tr)
+        self.layout_panel.changed.connect(self._layout_changed)
+        self.layout_panel.sheet_view.toggled.connect(lambda _: self._refresh())
         self.output = OutputPanel(tr)
         self.output.write_requested.connect(self.write_output)
         self.output.output_intent_requested.connect(self.set_output_intent)
 
         self.tabs = QTabWidget()
         for panel, key in [(self.job, "tab_job"), (self.media, "tab_media"),
-                           (self.finishing, "tab_finishing"), (self.output, "tab_output")]:
+                           (self.finishing, "tab_finishing"), (self.layout_panel, "tab_layout"),
+                           (self.output, "tab_output")]:
             tr.bind(_TabLabel(self.tabs, self.tabs.addTab(panel, "")), key)
 
         self.dock = QDockWidget()
@@ -209,6 +215,7 @@ class MainWindow(QMainWindow):
         self.act_shift = action("shift_content", self.shift_content)
         self.act_boxes = action("edit_boxes", self.edit_boxes)
         self.act_bleed = action("add_bleed", self.add_bleed)
+        self.act_repeat = action("repeat_pages", self.repeat_pages)
 
         self.act_element = action("add_element", self.add_element, "Ctrl+T")
         self.act_remove_elements = action("remove_elements", self.remove_elements)
@@ -244,6 +251,8 @@ class MainWindow(QMainWindow):
                                self.act_blank, self.act_replace])
         menu_pages.addSeparator()
         menu_pages.addActions([self.act_scale, self.act_shift, self.act_boxes, self.act_bleed])
+        menu_pages.addSeparator()
+        menu_pages.addAction(self.act_repeat)
 
         menu_elements = tr.bind(self.menuBar().addMenu(""), "elements", "setTitle")
         menu_elements.addActions([self.act_element, self.act_remove_elements])
@@ -278,7 +287,7 @@ class MainWindow(QMainWindow):
             self.act_rot_r, self.act_delete, self.act_duplicate, self.act_blank, self.act_replace,
             self.act_scale, self.act_shift, self.act_boxes, self.act_bleed, self.act_element,
             self.act_remove_elements, self.act_tab_sheets, self.act_bleed_tabs, self.act_remove_tabs,
-            self.act_spine, self.act_marks, self.act_remove_marks,
+            self.act_spine, self.act_marks, self.act_remove_marks, self.act_repeat,
         ]
 
     def _set_language(self, code: str) -> None:
@@ -326,12 +335,47 @@ class MainWindow(QMainWindow):
 
     # --- Anzeige ------------------------------------------------------------
 
+    @property
+    def sheet_mode(self) -> bool:
+        return (self.layout_panel.sheet_view.isChecked() and self.doc is not None
+                and self.layout_panel.layout_combo.value() != impose.Layout.NONE)
+
+    def imposition(self) -> impose.Imposition:
+        return self.layout_panel.imposition(self.doc.page_count if self.doc else 0)
+
+    def _layout_changed(self) -> None:
+        imp = self.imposition()
+        fin = self.finishing
+        if imp.layout in (impose.Layout.BOOKLET, impose.Layout.MULTI_BOOKLET):
+            if fin.staple.value().name == "NONE":
+                from ..core.jdf import Fold, Staple
+
+                fin.staple.set_value(Staple.SADDLE)
+                fin.fold.set_value(Fold.HALF)
+        if imp.layout == impose.Layout.PERFECT_BOUND and self.layout_panel.spine.value() == 0 and self.doc:
+            from ..core.media import Media
+
+            pages = self.doc.page_count - (2 if self.layout_panel.cover.isChecked() else 0)
+            media = Media("x", thickness_um=self.layout_panel.thickness.value() * 1000)
+            self.layout_panel.spine.setValue(spine.spine_width_mm(max(pages, 0), media, imp.duplex))
+        if self.sheet_mode:
+            self._refresh()
+
     def _refresh(self) -> None:
         current = max(self.pages.currentRow(), 0)
         self.pages.blockSignals(True)
         self.pages.clear()
-        if self.doc is not None:
-            for index, image in enumerate(render_pages(self.doc.to_bytes(), max_size=140)):
+        self.view_doc = self.doc
+        if self.sheet_mode:
+            try:
+                self.view_doc = impose.impose(self.doc, self.imposition())
+            except ValueError as exc:
+                self.statusBar().showMessage(str(exc), 8000)
+        editable = self.doc is not None and self.view_doc is self.doc
+        self.pages.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop if editable
+                                   else QAbstractItemView.DragDropMode.NoDragDrop)
+        if self.view_doc is not None:
+            for index, image in enumerate(render_pages(self.view_doc.to_bytes(), max_size=140)):
                 item = QListWidgetItem(QIcon(QPixmap.fromImage(ImageQt(image))), str(index + 1))
                 item.setData(PAGE_ROLE, index)
                 self.pages.addItem(item)
@@ -342,31 +386,40 @@ class MainWindow(QMainWindow):
         self.pages.blockSignals(False)
         has_doc = self.doc is not None
         for act in self._doc_actions:
-            act.setEnabled(has_doc)
+            act.setEnabled(editable)
+        self.act_save.setEnabled(has_doc)
+        self.act_save_project.setEnabled(has_doc)
         self.act_undo.setEnabled(self.history.can_undo)
         self.act_redo.setEnabled(self.history.can_redo)
         self.output.write_btn.setEnabled(has_doc)
         self._refresh_media_colors()
         self._refresh_info()
-        if has_doc and self.doc.page_count:
-            self.pages.setCurrentRow(min(current, self.doc.page_count - 1),
+        if has_doc and self.view_doc.page_count:
+            self.pages.setCurrentRow(min(current, self.view_doc.page_count - 1),
                                      QItemSelectionModel.SelectionFlag.NoUpdate)
             self._show_page(self.pages.currentRow())
 
     def _show_page(self, index: int) -> None:
-        if self.doc is None or not 0 <= index < self.doc.page_count:
+        doc = self.view_doc
+        if doc is None or not 0 <= index < doc.page_count:
             return
         first_show = self.page_view._page_item is None
-        image = render_page_media(self.doc.to_bytes(), index, scale=2.0)
+        image = render_page_media(doc.to_bytes(), index, scale=2.0 if doc is self.doc else 1.2)
         boxes = {}
-        if self.doc.page_rotation(index) == 0:  # Box-Anzeige nur für ungedrehte Seiten
-            boxes = {name: self.doc.box(index, name) for name in BOXES if self.doc.has_box(index, name)}
-            boxes.setdefault("TrimBox", self.doc.box(index, "TrimBox"))
-        media_box = self.doc.box(index, "MediaBox")
-        if self.doc.page_rotation(index) % 180:
+        if doc.page_rotation(index) == 0:  # Box-Anzeige nur für ungedrehte Seiten
+            boxes = {name: doc.box(index, name) for name in BOXES if doc.has_box(index, name)}
+            boxes.setdefault("TrimBox", doc.box(index, "TrimBox"))
+        media_box = doc.box(index, "MediaBox")
+        if doc.page_rotation(index) % 180:
             x0, y0, x1, y1 = media_box
             media_box = (0, 0, y1 - y0, x1 - x0)
         self.page_view.set_page(QPixmap.fromImage(ImageQt(image)), media_box, boxes)
+        if doc is self.doc and doc.page_rotation(index) == 0:
+            from .overlays import finishing_items
+
+            for item in finishing_items(self.page_view, doc.box(index, "TrimBox"), self.finishing.finishing(),
+                                        index):
+                self.page_view.add_overlay(item)
         if first_show:
             self.page_view.fit()
 
@@ -375,6 +428,8 @@ class MainWindow(QMainWindow):
         self._show_page(self.pages.currentRow())
 
     def _refresh_media_colors(self) -> None:
+        if self.view_doc is not self.doc:
+            return
         for index in range(self.pages.count()):
             item = self.pages.item(index)
             media = self.media.media_for_page(index)
@@ -487,7 +542,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(self.tr_("saved", path), 5000)
 
     def project(self) -> Project:
-        return Project(self.doc, self.ticket(), self.output.options())
+        return Project(self.doc, self.ticket(), self.output.options(), self.imposition())
 
     def save_project(self) -> None:
         if self.doc is None:
@@ -513,6 +568,7 @@ class MainWindow(QMainWindow):
         out.sidecar.setChecked(project.output.sidecar)
         out.ticketing.setChecked(project.output.ticketing)
         out.pdfx_anyway.setChecked(project.output.pdfx_policy.name == "EMBED_ANYWAY")
+        self.layout_panel.set_imposition(project.imposition)
         self._refresh()
 
     def apply_ticket(self, ticket: JobTicket) -> None:
@@ -620,6 +676,20 @@ class MainWindow(QMainWindow):
             pages = self._scope(dialog.scope.currentData())
             bleed = dialog.bleed.value() * MM
             self.modify(lambda: [self.doc.add_bleed(i, bleed) for i in pages])
+
+    def repeat_pages(self) -> None:
+        count, ok = QInputDialog.getInt(self, self.tr_("repeat_pages"), self.tr_("repeat_count"), 50, 1, 10000)
+        if ok:
+            pages = self._scope("selection")
+            if pages == list(range(self.doc.page_count)):
+                self.modify(lambda: impose.repeat_pages(self.doc, count))
+            else:
+                def run() -> None:
+                    for index in reversed(pages):
+                        for _ in range(count - 1):
+                            self.doc.duplicate_pages([index])
+
+                self.modify(run)
 
     # --- Abschnitte ---------------------------------------------------------
 
@@ -782,7 +852,8 @@ class MainWindow(QMainWindow):
         result = {}
 
         def run() -> None:
-            result["r"] = write_output(self.doc, self.ticket(), Path(path), self.output.options())
+            result["r"] = write_output(self.doc, self.ticket(), Path(path), self.output.options(),
+                                       self.imposition())
 
         if self._guard(run):
             res = result["r"]
@@ -804,7 +875,7 @@ class MainWindow(QMainWindow):
         template.media_ranges = []  # Seitenbereiche gelten nur für das offene Dokument
         for p in paths:
             try:
-                process_file(Path(p), Path(out), template, self.output.options())
+                process_file(Path(p), Path(out), template, self.output.options(), self.imposition())
                 ok += 1
             except Exception as exc:
                 failed.append(f"{Path(p).name}: {exc}")

@@ -150,3 +150,26 @@ def test_tab_sheets_assign_media(win, sample_pdf, monkeypatch):
     assert win.doc.page_count == 5
     ranges = win.media.media_ranges()
     assert [(r.first, r.media.name) for r in ranges] == [(0, "A4 Register 5er"), (3, "A4 Register 5er")]
+
+
+def test_sheet_view_and_finishing_overlay(win, tmp_path):
+    from conftest import make_pdf
+    from jdfpdf.core.impose import Layout
+    from jdfpdf.core.jdf import Punch
+    win.load(make_pdf(tmp_path / "b.pdf", pages=8))
+    win.finishing.punch.set_value(Punch.FOUR_LEFT)
+    win._show_page(0)
+    assert len(win.page_view._overlay_items) == 4
+    win.layout_panel.layout_combo.set_value(Layout.BOOKLET)
+    win.layout_panel.auto_sheet.setChecked(True)
+    assert win.finishing.staple.value() == Staple.SADDLE  # automatisch gesetzt
+    win.layout_panel.sheet_view.setChecked(True)
+    assert win.sheet_mode
+    assert win.pages.count() == 4
+    assert not win.act_delete.isEnabled()
+    win.layout_panel.sheet_view.setChecked(False)
+    assert win.pages.count() == 8
+    win.project().save(tmp_path / "p.jdfproj")
+    win.layout_panel.layout_combo.set_value(Layout.NONE)
+    win.load(tmp_path / "p.jdfproj")
+    assert win.layout_panel.layout_combo.value() == Layout.BOOKLET

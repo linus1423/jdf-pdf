@@ -12,6 +12,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from .impose import BackFlip, Imposition, Layout
 from .jdf import ColorModel, Finishing, Fold, JobTicket, MediaRange, Punch, Sides, Staple
 from .media import Media
 from .pdfdoc import PdfDocument
@@ -26,6 +27,7 @@ class Project:
     document: PdfDocument
     ticket: JobTicket
     output: OutputOptions = field(default_factory=OutputOptions)
+    imposition: Imposition = field(default_factory=Imposition)
     extra: dict[str, Any] = field(default_factory=dict)  # Einstellungen späterer Module
 
     def save(self, path: str | Path) -> None:
@@ -33,6 +35,7 @@ class Project:
             "version": FORMAT_VERSION,
             "ticket": _to_jsonable(self.ticket),
             "output": _to_jsonable(self.output),
+            "imposition": _to_jsonable(self.imposition),
             "extra": self.extra,
         }
         with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -50,6 +53,7 @@ class Project:
             document=PdfDocument.from_bytes(pdf),
             ticket=ticket_from_dict(data["ticket"]),
             output=_output_from_dict(data.get("output", {})),
+            imposition=imposition_from_dict(data.get("imposition", {})),
             extra=data.get("extra", {}),
         )
 
@@ -92,6 +96,16 @@ def ticket_from_dict(data: dict) -> JobTicket:
         customer=data.get("customer"),
         comment=data.get("comment"),
     )
+
+
+def imposition_from_dict(data: dict) -> Imposition:
+    known = {f.name for f in fields(Imposition)}
+    values = {k: v for k, v in data.items() if k in known}
+    if "layout" in values:
+        values["layout"] = Layout[values["layout"]]
+    if "back_flip" in values:
+        values["back_flip"] = BackFlip[values["back_flip"]]
+    return Imposition(**values)
 
 
 def _output_from_dict(data: dict) -> OutputOptions:

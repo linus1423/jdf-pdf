@@ -287,3 +287,127 @@ class SectionsPanel(QWidget):
         item = self.tree.currentItem()
         if item is not None:
             signal.emit(self._row(item))
+
+
+class LayoutPanel(QWidget):
+    """Ausschießen: Layout, Bogen, Nutzen, Broschüre, Klebebindung, Bogenansicht."""
+
+    changed = Signal()
+
+    def __init__(self, tr: Translator) -> None:
+        from PySide6.QtWidgets import QDoubleSpinBox
+
+        from ..core.impose import BackFlip, Layout
+        from .dialogs import PAGE_PRESETS
+
+        super().__init__()
+        self.tr_ = tr
+        self.layout_combo = EnumCombo(Layout, tr, "layout")
+        self.sheet_preset = QComboBox()
+        self.sheet_preset.addItem("–", None)
+        for name, size in {**PAGE_PRESETS, "SRA4": (225, 320), "SRA3+": (330, 488)}.items():
+            self.sheet_preset.addItem(name, size)
+        self.sheet_w = QDoubleSpinBox(minimum=10, maximum=2000, value=320, suffix=" mm", decimals=1)
+        self.sheet_h = QDoubleSpinBox(minimum=10, maximum=2000, value=450, suffix=" mm", decimals=1)
+        self.auto_sheet = tr.bind(QCheckBox(), "auto_sheet")
+        self.cols = QSpinBox(minimum=1, maximum=50, value=2)
+        self.rows = QSpinBox(minimum=1, maximum=50, value=2)
+        self.gap = QDoubleSpinBox(minimum=0, maximum=100, suffix=" mm", decimals=1)
+        self.bleed = QDoubleSpinBox(minimum=0, maximum=20, suffix=" mm", decimals=1)
+        self.rotate = tr.bind(QCheckBox(), "rotate_cells")
+        self.duplex = tr.bind(QCheckBox(checked=True), "duplex")
+        self.back_flip = EnumCombo(BackFlip, tr, "flip")
+        self.crop_marks = tr.bind(QCheckBox(), "mark_crop")
+        self.creep_auto = tr.bind(QCheckBox(checked=True), "creep_auto")
+        self.creep = QDoubleSpinBox(minimum=0, maximum=20, suffix=" mm", decimals=2)
+        self.thickness = QDoubleSpinBox(minimum=0.01, maximum=2, value=0.1, suffix=" mm", decimals=3)
+        self.sheets_per_booklet = QSpinBox(minimum=1, maximum=50, value=4)
+        self.spine = QDoubleSpinBox(minimum=0, maximum=200, suffix=" mm", decimals=1)
+        self.glue = QDoubleSpinBox(minimum=0, maximum=30, suffix=" mm", decimals=1)
+        self.cover = tr.bind(QCheckBox(), "cover_first_last")
+        self.sheet_view = tr.bind(QPushButton(checkable=True), "sheet_view")
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(_form(tr, [
+            ("layout", self.layout_combo), ("preset", self.sheet_preset), ("sheet_width", self.sheet_w),
+            ("sheet_height", self.sheet_h),
+        ]))
+        layout.addWidget(self.auto_sheet)
+        layout.addLayout(_form(tr, [
+            ("cols", self.cols), ("rows", self.rows), ("gap", self.gap), ("bleed", self.bleed),
+        ]))
+        for widget in (self.rotate, self.duplex):
+            layout.addWidget(widget)
+        layout.addLayout(_form(tr, [("back_flip", self.back_flip)]))
+        layout.addWidget(self.crop_marks)
+        layout.addWidget(self.creep_auto)
+        layout.addLayout(_form(tr, [
+            ("creep", self.creep), ("paper_thickness", self.thickness),
+            ("sheets_per_booklet", self.sheets_per_booklet), ("spine_width", self.spine),
+            ("glue_zone", self.glue),
+        ]))
+        layout.addWidget(self.cover)
+        layout.addWidget(self.sheet_view)
+        layout.addStretch()
+
+        self.sheet_preset.currentIndexChanged.connect(self._apply_preset)
+        for widget in (self.layout_combo, self.back_flip):
+            widget.currentIndexChanged.connect(self.changed)
+        for widget in (self.sheet_w, self.sheet_h, self.gap, self.bleed, self.creep, self.thickness,
+                       self.spine, self.glue):
+            widget.valueChanged.connect(self.changed)
+        for widget in (self.cols, self.rows, self.sheets_per_booklet):
+            widget.valueChanged.connect(self.changed)
+        for widget in (self.auto_sheet, self.rotate, self.duplex, self.crop_marks, self.creep_auto, self.cover):
+            widget.toggled.connect(self.changed)
+
+    def _apply_preset(self) -> None:
+        size = self.sheet_preset.currentData()
+        if size:
+            self.sheet_w.setValue(size[0])
+            self.sheet_h.setValue(size[1])
+
+    def imposition(self, page_count: int = 0):
+        from ..core.impose import Imposition
+
+        return Imposition(
+            layout=self.layout_combo.value(), sheet_width_mm=self.sheet_w.value(),
+            sheet_height_mm=self.sheet_h.value(), auto_sheet=self.auto_sheet.isChecked(),
+            cols=self.cols.value(), rows=self.rows.value(), gap_mm=self.gap.value(), bleed_mm=self.bleed.value(),
+            rotate=self.rotate.isChecked(), duplex=self.duplex.isChecked(), back_flip=self.back_flip.value(),
+            crop_marks=self.crop_marks.isChecked(),
+            creep_mm=None if self.creep_auto.isChecked() else self.creep.value(),
+            paper_thickness_mm=self.thickness.value(), sheets_per_booklet=self.sheets_per_booklet.value(),
+            spine_mm=self.spine.value(), glue_zone_mm=self.glue.value(),
+            cover_front=0 if self.cover.isChecked() and page_count else None,
+            cover_back=page_count - 1 if self.cover.isChecked() and page_count > 1 else None,
+        )
+
+    def set_imposition(self, imp) -> None:
+        widgets = [self.layout_combo, self.sheet_w, self.sheet_h, self.auto_sheet, self.cols, self.rows, self.gap,
+                   self.bleed, self.rotate, self.duplex, self.back_flip, self.crop_marks, self.creep_auto,
+                   self.creep, self.thickness, self.sheets_per_booklet, self.spine, self.glue, self.cover]
+        for w in widgets:
+            w.blockSignals(True)
+        self.layout_combo.set_value(imp.layout)
+        self.sheet_w.setValue(imp.sheet_width_mm)
+        self.sheet_h.setValue(imp.sheet_height_mm)
+        self.auto_sheet.setChecked(imp.auto_sheet)
+        self.cols.setValue(imp.cols)
+        self.rows.setValue(imp.rows)
+        self.gap.setValue(imp.gap_mm)
+        self.bleed.setValue(imp.bleed_mm)
+        self.rotate.setChecked(imp.rotate)
+        self.duplex.setChecked(imp.duplex)
+        self.back_flip.set_value(imp.back_flip)
+        self.crop_marks.setChecked(imp.crop_marks)
+        self.creep_auto.setChecked(imp.creep_mm is None)
+        self.creep.setValue(imp.creep_mm or 0)
+        self.thickness.setValue(imp.paper_thickness_mm)
+        self.sheets_per_booklet.setValue(imp.sheets_per_booklet)
+        self.spine.setValue(imp.spine_mm)
+        self.glue.setValue(imp.glue_zone_mm)
+        self.cover.setChecked(imp.cover_front is not None)
+        for w in widgets:
+            w.blockSignals(False)
+        self.changed.emit()
