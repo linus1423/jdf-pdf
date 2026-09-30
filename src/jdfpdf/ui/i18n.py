@@ -46,12 +46,91 @@ _TEXTS: dict[str, dict[str, str]] = {
     "choose_output": {"de": "Zielordner wählen", "en": "Choose output folder"},
     "batch_done": {"de": "{ok} verarbeitet, {failed} fehlgeschlagen", "en": "{ok} processed, {failed} failed"},
     "restart_hint": {"de": "Sprache geändert.", "en": "Language changed."},
+    # Paket 1: Medien, Finishing, Ausgabe
+    "tab_job": {"de": "Auftrag", "en": "Job"},
+    "tab_media": {"de": "Medien", "en": "Media"},
+    "tab_finishing": {"de": "Weiterverarbeitung", "en": "Finishing"},
+    "tab_output": {"de": "Ausgabe", "en": "Output"},
+    "media_default": {"de": "Standardmedium", "en": "Default media"},
+    "media_from_document": {"de": "Format aus Dokument", "en": "Size from document"},
+    "media_ranges": {"de": "Medien für Seitenbereiche", "en": "Media for page ranges"},
+    "from_page": {"de": "Von Seite", "en": "From page"},
+    "to_page": {"de": "Bis Seite", "en": "To page"},
+    "media": {"de": "Medium", "en": "Media"},
+    "add": {"de": "Hinzufügen", "en": "Add"},
+    "remove": {"de": "Entfernen", "en": "Remove"},
+    "assign_selection": {"de": "Auswahl zuweisen", "en": "Assign to selection"},
+    "edit_catalog": {"de": "Medienkatalog …", "en": "Media catalog …"},
+    "catalog_title": {"de": "Medienkatalog", "en": "Media catalog"},
+    "import_jmf": {"de": "Aus JMF-Datei importieren …", "en": "Import from JMF file …"},
+    "imported": {"de": "{0} Medien importiert", "en": "{0} media imported"},
+    "col_name": {"de": "Name", "en": "Name"},
+    "col_width": {"de": "Breite (mm)", "en": "Width (mm)"},
+    "col_height": {"de": "Höhe (mm)", "en": "Height (mm)"},
+    "col_weight": {"de": "g/m²", "en": "gsm"},
+    "col_type": {"de": "Typ", "en": "Type"},
+    "col_color": {"de": "Farbe", "en": "Color"},
+    "col_coating": {"de": "Beschichtung", "en": "Coating"},
+    "col_thickness": {"de": "Dicke (µm)", "en": "Thickness (µm)"},
+    "col_punched": {"de": "Gelocht", "en": "Punched"},
+    "col_tabs": {"de": "Taben", "en": "Tabs"},
+    "staple": {"de": "Heften", "en": "Staple"},
+    "punch": {"de": "Lochen", "en": "Punch"},
+    "fold": {"de": "Falzen", "en": "Fold"},
+    "trim": {"de": "Beschneiden", "en": "Trim"},
+    "staple_none": {"de": "Keine", "en": "None"},
+    "staple_top_left": {"de": "Oben links", "en": "Top left"},
+    "staple_top_right": {"de": "Oben rechts", "en": "Top right"},
+    "staple_left_two": {"de": "Links, 2 Klammern", "en": "Left, 2 staples"},
+    "staple_top_two": {"de": "Oben, 2 Klammern", "en": "Top, 2 staples"},
+    "staple_saddle": {"de": "Rückstich", "en": "Saddle stitch"},
+    "punch_none": {"de": "Keine", "en": "None"},
+    "punch_two_left": {"de": "2 Löcher links", "en": "2 holes left"},
+    "punch_four_left": {"de": "4 Löcher links", "en": "4 holes left"},
+    "punch_two_top": {"de": "2 Löcher oben", "en": "2 holes top"},
+    "fold_none": {"de": "Kein", "en": "None"},
+    "fold_half": {"de": "Einbruchfalz", "en": "Half fold"},
+    "fold_z": {"de": "Zickzackfalz", "en": "Z fold"},
+    "out_embed": {"de": "JDF ins PDF einbetten", "en": "Embed JDF in PDF"},
+    "out_sidecar": {"de": "JDF als eigene Datei", "en": "JDF as separate file"},
+    "out_ticketing": {"de": "JDF+PDF in einer Datei (PRISMAsync)", "en": "JDF+PDF in one file (PRISMAsync)"},
+    "out_pdfx_anyway": {
+        "de": "Auch in PDF/X-1a/3/4 einbetten (bricht ggf. die Konformität)",
+        "en": "Embed into PDF/X-1a/3/4 too (may break conformance)",
+    },
+    "output_intent": {"de": "Output Intent: {0}", "en": "Output intent: {0}"},
+    "none": {"de": "keiner", "en": "none"},
+    "set_output_intent": {"de": "Output Intent setzen …", "en": "Set output intent …"},
+    "icc_filter": {"de": "ICC-Profile (*.icc *.icm)", "en": "ICC profiles (*.icc *.icm)"},
+    "identifier": {"de": "Kennung (z. B. FOGRA39)", "en": "Identifier (e.g. FOGRA39)"},
+    "write_output": {"de": "Ausgeben …", "en": "Write output …"},
+    "pdfx_skipped": {
+        "de": "{0}: JDF nicht eingebettet, damit das PDF konform bleibt. Separate Datei bzw. JDF-Ticketing nutzen.",
+        "en": "{0}: JDF not embedded to keep the PDF conformant. Use the separate file or JDF ticketing.",
+    },
+    "written": {"de": "Geschrieben: {0}", "en": "Written: {0}"},
 }
 
 
 class Translator:
+    """Übersetzt Schlüssel; gebundene Widgets werden beim Sprachwechsel neu beschriftet."""
+
     def __init__(self, language: str = "de") -> None:
         self.language = language if language in LANGUAGES else "de"
+        self._bindings: list[tuple[object, str, str]] = []
+
+    def bind(self, widget: object, key: str, setter: str = "setText") -> object:
+        self._bindings.append((widget, setter, key))
+        getattr(widget, setter)(self(key))
+        return widget
+
+    def set_language(self, language: str) -> None:
+        self.language = language if language in LANGUAGES else "de"
+        for widget, setter, key in self._bindings:
+            try:
+                getattr(widget, setter)(self(key))
+            except RuntimeError:  # Widget wurde bereits gelöscht
+                pass
 
     def __call__(self, key: str, *args: object, **kwargs: object) -> str:
         entry = _TEXTS.get(key)

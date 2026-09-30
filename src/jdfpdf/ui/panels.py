@@ -1,0 +1,233 @@
+"""Seitenleisten-Panels: Auftrag, Medien, Weiterverarbeitung, Ausgabe."""
+
+from __future__ import annotations
+
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QPlainTextEdit,
+    QPushButton,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
+
+from ..core.jdf import ColorModel, Finishing, Fold, MediaRange, Punch, Sides, Staple
+from ..core.media import Media, MediaCatalog
+from ..core.prepress import OutputOptions, PdfxPolicy
+from .i18n import Translator
+from .widgets import EnumCombo
+
+
+def _form(tr: Translator, rows: list[tuple[str, QWidget]]) -> QFormLayout:
+    form = QFormLayout()
+    for key, widget in rows:
+        form.addRow(tr.bind(QLabel(), key), widget)
+    return form
+
+
+class JobPanel(QWidget):
+    def __init__(self, tr: Translator) -> None:
+        super().__init__()
+        self.name = QLineEdit()
+        self.copies = QSpinBox(minimum=1, maximum=1_000_000)
+        self.sides = EnumCombo(Sides, tr)
+        self.color = EnumCombo(ColorModel, tr)
+        self.customer = QLineEdit()
+        self.comment = QPlainTextEdit()
+        self.comment.setMaximumHeight(90)
+        layout = QVBoxLayout(self)
+        layout.addLayout(
+            _form(
+                tr,
+                [
+                    ("job_name", self.name),
+                    ("copies", self.copies),
+                    ("sides", self.sides),
+                    ("color", self.color),
+                    ("customer", self.customer),
+                    ("comment", self.comment),
+                ],
+            )
+        )
+        layout.addStretch()
+
+
+class MediaPanel(QWidget):
+    """Standardmedium und Medien je Seitenbereich."""
+
+    changed = Signal()
+    catalog_requested = Signal()
+
+    def __init__(self, tr: Translator, catalog: MediaCatalog) -> None:
+        super().__init__()
+        self.tr_ = tr
+        self.catalog = catalog
+        self.page_count = 0
+        self.default = QComboBox()
+        self.default.currentIndexChanged.connect(self.changed)
+
+        self.ranges = QTableWidget(0, 3)
+        self._set_headers()
+        tr.bind(self, "", setter="_retranslate")
+        self.ranges.horizontalHeader().setStretchLastSection(True)
+        self.ranges.itemChanged.connect(lambda *_: self.changed.emit())
+
+        self.range_media = QComboBox()
+        add = tr.bind(QPushButton(clicked=self.assign_to_selection), "assign_selection")
+        remove = tr.bind(QPushButton(clicked=self._remove_selected), "remove")
+        catalog_btn = tr.bind(QPushButton(clicked=self.catalog_requested), "edit_catalog")
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(_form(tr, [("media_default", self.default)]))
+        layout.addWidget(tr.bind(QLabel(), "media_ranges"))
+        layout.addWidget(self.ranges)
+        row = QHBoxLayout()
+        row.addWidget(self.range_media, 1)
+        row.addWidget(add)
+        row.addWidget(remove)
+        layout.addLayout(row)
+        layout.addWidget(catalog_btn)
+        self.selection_provider = lambda: []
+        self.reload_catalog()
+
+    def _retranslate(self, _text: str) -> None:
+        self._set_headers()
+        self.default.setItemText(0, self.tr_("media_from_document"))
+
+    def _set_headers(self) -> None:
+        self.ranges.setHorizontalHeaderLabels([self.tr_("from_page"), self.tr_("to_page"), self.tr_("media")])
+
+    def reload_catalog(self) -> None:
+        current = self.default.currentData()
+        self.default.blockSignals(True)
+        self.default.clear()
+        self.default.addItem(self.tr_("media_from_document"), None)
+        self.range_media.clear()
+        for media in self.catalog.media:
+            self.default.addItem(media.label(), media.name)
+            self.range_media.addItem(media.label(), media.name)
+        index = self.default.findData(current)
+        self.default.setCurrentIndex(max(index, 0))
+        self.default.blockSignals(False)
+
+    def default_media(self) -> Media | None:
+        name = self.default.currentData()
+        return self.catalog.get(name) if name else None
+
+    def add_range(self, first: int, last: int, media_name: str) -> None:
+        self.ranges.blockSignals(True)
+        row = self.ranges.rowCount()
+        self.ranges.insertRow(row)
+        self.ranges.setItem(row, 0, QTableWidgetItem(str(first + 1)))
+        self.ranges.setItem(row, 1, QTableWidgetItem(str(last + 1)))
+        self.ranges.setItem(row, 2, QTableWidgetItem(media_name))
+        self.ranges.blockSignals(False)
+        self.changed.emit()
+
+    def assign_to_selection(self) -> None:
+        pages = self.selection_provider()
+        name = self.range_media.currentData()
+        if not pages or not name:
+            return
+        # zusammenhängende Bereiche bilden
+        start = prev = pages[0]
+        for page in pages[1:] + [None]:
+            if page is not None and page == prev + 1:
+                prev = page
+                continue
+            self.add_range(start, prev, name)
+            if page is not None:
+                start = prev = page
+
+    def _remove_selected(self) -> None:
+        for row in sorted({i.row() for i in self.ranges.selectedIndexes()}, reverse=True):
+            self.ranges.removeRow(row)
+        self.changed.emit()
+
+    def clear_ranges(self) -> None:
+        self.ranges.setRowCount(0)
+        self.changed.emit()
+
+    def media_ranges(self) -> list[MediaRange]:
+        result = []
+        for row in range(self.ranges.rowCount()):
+            try:
+                first = int(self.ranges.item(row, 0).text()) - 1
+                last = int(self.ranges.item(row, 1).text()) - 1
+            except (AttributeError, ValueError):
+                continue
+            media = self.catalog.get(self.ranges.item(row, 2).text())
+            if media is not None and 0 <= first <= last:
+                result.append(MediaRange(first, last, media))
+        return result
+
+    def media_for_page(self, index: int) -> Media | None:
+        for rng in reversed(self.media_ranges()):
+            if rng.first <= index <= rng.last:
+                return rng.media
+        return self.default_media()
+
+
+class FinishingPanel(QWidget):
+    changed = Signal()
+
+    def __init__(self, tr: Translator) -> None:
+        super().__init__()
+        self.staple = EnumCombo(Staple, tr, "staple")
+        self.punch = EnumCombo(Punch, tr, "punch")
+        self.fold = EnumCombo(Fold, tr, "fold")
+        self.trim = tr.bind(QCheckBox(), "trim")
+        for widget in (self.staple, self.punch, self.fold):
+            widget.currentIndexChanged.connect(self.changed)
+        self.trim.toggled.connect(self.changed)
+        layout = QVBoxLayout(self)
+        layout.addLayout(_form(tr, [("staple", self.staple), ("punch", self.punch), ("fold", self.fold)]))
+        layout.addWidget(self.trim)
+        layout.addStretch()
+
+    def finishing(self) -> Finishing:
+        return Finishing(self.staple.value(), self.punch.value(), self.fold.value(), self.trim.isChecked())
+
+
+class OutputPanel(QWidget):
+    write_requested = Signal()
+    output_intent_requested = Signal()
+
+    def __init__(self, tr: Translator) -> None:
+        super().__init__()
+        self.tr_ = tr
+        self.embed = tr.bind(QCheckBox(checked=True), "out_embed")
+        self.sidecar = tr.bind(QCheckBox(checked=True), "out_sidecar")
+        self.ticketing = tr.bind(QCheckBox(), "out_ticketing")
+        self.pdfx_anyway = tr.bind(QCheckBox(), "out_pdfx_anyway")
+        self.info = QLabel(wordWrap=True)
+        self.warning = QLabel(wordWrap=True)
+        self.warning.setStyleSheet("color: #b35c00;")
+        self.intent = QLabel(wordWrap=True)
+        intent_btn = tr.bind(QPushButton(clicked=self.output_intent_requested), "set_output_intent")
+        self.write_btn = tr.bind(QPushButton(clicked=self.write_requested), "write_output")
+        self.attachments_label = tr.bind(QLabel(), "attachments")
+        self.attachments = QListWidget()
+
+        layout = QVBoxLayout(self)
+        for widget in (self.embed, self.sidecar, self.ticketing, self.pdfx_anyway, self.write_btn,
+                       self.info, self.warning, self.intent, intent_btn, self.attachments_label, self.attachments):
+            layout.addWidget(widget)
+        layout.addStretch()
+
+    def options(self) -> OutputOptions:
+        return OutputOptions(
+            embed=self.embed.isChecked(),
+            sidecar=self.sidecar.isChecked(),
+            ticketing=self.ticketing.isChecked(),
+            pdfx_policy=PdfxPolicy.EMBED_ANYWAY if self.pdfx_anyway.isChecked() else PdfxPolicy.KEEP,
+        )
