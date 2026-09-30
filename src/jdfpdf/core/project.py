@@ -118,6 +118,7 @@ def _output_from_dict(data: dict) -> OutputOptions:
         ppf_embed=data.get("ppf_embed", False),
         preflight=data.get("preflight", False),
         finishing_jdf=data.get("finishing_jdf", False),
+        softproof=data.get("softproof", False),
         barcode_text=data.get("barcode_text", "{job}-{page}"),
         language=data.get("language", "de"),
         ppf_profile=_profile(data.get("ppf_profile")),

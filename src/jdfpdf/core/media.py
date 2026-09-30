@@ -133,6 +133,13 @@ def default_media() -> list[Media]:
     ]
 
 
+# Anzeigefarben für JDF-NamedColor (Seitenliste, Softproof)
+MEDIA_RGB = {
+    "white": "#ffffff", "yellow": "#fff4a3", "blue": "#cfe3ff", "green": "#d4f5d0", "pink": "#ffd6e7",
+    "red": "#ffc9c2", "orange": "#ffe0b8", "gray": "#e3e3e3", "grey": "#e3e3e3", "ivory": "#fffbe8",
+}
+
+
 def config_dir() -> Path:
     if sys.platform == "win32":
         base = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))

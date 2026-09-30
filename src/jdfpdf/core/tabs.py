@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pikepdf
 from reportlab.lib.utils import ImageReader
 
 from .layers import add_layer, cmyk, draw_overlay, font, remove_layers
@@ -18,6 +19,7 @@ from .pdfdoc import PdfDocument, Section
 MM = 72 / 25.4
 LAYER_SHEET = "tabsheet"
 LAYER_BLEED = "bleedtab"
+TAB_KEY = pikepdf.Name("/JdfpdfTab")  # Tab-Rechteck eines Registerblatts
 
 DEFAULT_TAB_COLORS = [
     (100, 0, 0, 0), (0, 100, 0, 0), (0, 0, 100, 0), (60, 0, 100, 0),
@@ -110,6 +112,9 @@ def insert_tab_sheets(
                 c.restoreState()
 
             add_layer(doc, before + offset, LAYER_SHEET, draw_overlay(width, height, draw))
+            # Lage des Tabs merken (Softproof zeigt die Blattform)
+            tab_x0 = 0 if back else width - ext
+            doc.pdf.pages[before + offset].obj[TAB_KEY] = pikepdf.Array([tab_x0, top - band, tab_x0 + ext, top])
         inserted.append(before)
     # Indizes im Enddokument: jedes frühere Einfügen verschiebt spätere Blätter
     per_tab = 2 if style.double_sided else 1

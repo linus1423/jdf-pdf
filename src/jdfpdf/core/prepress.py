@@ -54,10 +54,11 @@ class OutputOptions:
     language: str = "de"  # Sprache für Berichte
     finishing_jdf: bool = False  # eigenes JDF für die Weiterverarbeitung (``<name>_finishing.jdf``)
     barcode_text: str = "{job}-{page}"  # muss zum Barcode der Druckmarken passen
+    softproof: bool = False  # Vorschau-PDF des Endprodukts (``<name>_proof.pdf``)
 
     @property
     def any_output(self) -> bool:
-        return self.any or self.finishing_jdf
+        return self.any or self.finishing_jdf or self.softproof
 
     @property
     def any(self) -> bool:
@@ -106,6 +107,12 @@ def write_output(doc: PdfDocument, ticket: JobTicket, pdf_path: Path, options: O
     pdf_path = Path(pdf_path)
     warnings = []
     layout = []
+    proof = None
+    if options.softproof:  # aus den Einzelseiten, vor dem Ausschießen
+        from .softproof import ProofOptions, write_proof
+
+        proof = write_proof(doc, ticket, pdf_path.with_name(pdf_path.stem + "_proof.pdf"),
+                            ProofOptions(language=options.language))
     if imposition is not None and imposition.layout != Layout.NONE:
         from .impose import plan
 
@@ -119,6 +126,8 @@ def write_output(doc: PdfDocument, ticket: JobTicket, pdf_path: Path, options: O
             ticket = replace(ticket, media=None)
     ticket = complete_ticket(doc, replace(ticket, pdf_url=pdf_path.name))
     result = OutputResult(pdf=pdf_path, pdfx_version=doc.pdfx_version(), warnings=warnings, ticket=ticket)
+    if proof is not None:
+        result.extra_files.append(proof)
 
     if options.preflight:
         from .preflight import Severity, preflight, write_report
@@ -193,8 +202,10 @@ def write_output(doc: PdfDocument, ticket: JobTicket, pdf_path: Path, options: O
 
 def process_file(src: Path, dst_dir: Path, ticket: JobTicket, options: OutputOptions | None = None,
                  imposition: Imposition | None = None) -> OutputResult:
-    """Ein PDF für den Stapel verarbeiten; Auftragsname ist der Dateiname, falls leer."""
-    doc = PdfDocument.open(src)
+    """Eine Datei (PDF, Bild, Office) für den Stapel verarbeiten; Auftragsname ist der Dateiname, falls leer."""
+    from .importers import load_document
+
+    doc = load_document(src)
     dst_dir.mkdir(parents=True, exist_ok=True)
     ticket = replace(ticket, job_name=ticket.job_name or Path(src).stem)
-    return write_output(doc, ticket, dst_dir / Path(src).name, options or OutputOptions(), imposition)
+    return write_output(doc, ticket, dst_dir / (Path(src).stem + ".pdf"), options or OutputOptions(), imposition)

@@ -117,6 +117,7 @@ def _subcommand(argv: list[str]) -> int:
                 print(f"FEHLER {path}: {exc}", file=sys.stderr)
         return 1 if failed else 0
 
+    from .core.importers import load_document
     from .core.pdfdoc import PdfDocument
     from .core.printing import send as send_to
 
@@ -150,7 +151,7 @@ def _subcommand(argv: list[str]) -> int:
     failed = 0
     for path in args.files:
         try:
-            doc = PdfDocument.open(path)
+            doc = load_document(path)
             ticket, output, imposition, _ = apply_template(doc, template, path, overrides, catalog)
             if args.copies:
                 ticket.copies = args.copies
@@ -186,6 +187,7 @@ def _process(argv: list[str]) -> int:
     parser.add_argument("--press", help="Name des Maschinenprofils für die Farbzonen")
     parser.add_argument("--presses", type=Path, help="Maschinenprofile (JSON), sonst Standardprofile")
     parser.add_argument("--finishing-jdf", action="store_true", help="eigenes JDF für die Weiterverarbeitung")
+    parser.add_argument("--softproof", action="store_true", help="Vorschau-PDF des Endprodukts (<name>_proof.pdf)")
     args = parser.parse_args(argv)
 
     media = None
@@ -220,6 +222,7 @@ def _process(argv: list[str]) -> int:
         ppf_profile=profile,
         preflight=args.preflight,
         finishing_jdf=args.finishing_jdf,
+        softproof=args.softproof,
     )
     if not options.any_output:
         parser.error("Keine Ausgabe gewählt")

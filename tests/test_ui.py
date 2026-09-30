@@ -298,3 +298,103 @@ def test_automation_menu(win, tmp_path, monkeypatch):
     folder.toggle()
     assert folder.folder is None
     assert actions_automation.SUFFIX == ".jdftpl"
+
+
+def test_tools_menu(win, tmp_path, monkeypatch):
+    import io
+    import sys
+
+    from PySide6.QtWidgets import QFileDialog
+    from reportlab.pdfgen.canvas import Canvas
+
+    from jdfpdf.core import external
+    from jdfpdf.core.layers import layer_kinds
+    from jdfpdf.ui import actions_tools, dialogs_tools
+
+    buf = io.BytesIO()
+    c = Canvas(buf, pagesize=(400, 300))
+    c.setFont("Helvetica", 20)
+    c.drawString(50, 150, "Hallo Welt")
+    c.showPage()
+    c.drawString(50, 150, "Seite zwei")
+    c.showPage()
+    c.save()
+    (tmp_path / "t.pdf").write_bytes(buf.getvalue())
+    win.load(tmp_path / "t.pdf")
+    assert win.act_text_block.isEnabled() and win.act_softproof.isEnabled()
+
+    def accept(cls, setup):
+        class Accepting(cls):
+            def exec(self):
+                setup(self)
+                return 1
+        monkeypatch.setattr(actions_tools, cls.__name__, Accepting)
+
+    accept(dialogs_tools.TextBlockDialog, lambda d: d.text.setPlainText("Neuer Block"))
+    win.pages.item(0).setSelected(True)
+    win.add_text_block()
+    assert "text" in layer_kinds(win.doc, 0) and win.steps[-1]["op"] == "text_block"
+
+    def replace_setup(d):
+        d.find.setText("Welt")
+        d.replace.setText("Erde")
+        d.method.setCurrentIndex(1)  # umschreiben
+        d.count()
+        assert "1" in d.hits.text()
+    accept(dialogs_tools.ReplaceTextDialog, replace_setup)
+    win.replace_text()
+    assert win.steps[-1]["op"] == "replace_text" and win.steps[-1]["rewrite"] is True
+    win.pages.item(0).setSelected(True)
+    win.remove_text_edits()
+    assert "text" not in layer_kinds(win.doc, 0)
+
+    def cleanup_setup(d):
+        d.dpi.setValue(50)
+        d.update_preview()
+        assert d.after.pixmap() is not None
+    accept(dialogs_tools.CleanupDialog, cleanup_setup)
+    win.pages.item(1).setSelected(True)
+    win.cleanup_pages()
+    assert win.steps[-1]["op"] == "cleanup" and "Im0" in str(list(win.doc.pdf.pages[1].Resources.XObject.keys()))
+    win.undo()
+    assert win.steps[-1]["op"] != "cleanup"
+
+    data = tmp_path / "d.csv"
+    data.write_text("Name\nA\nB\nC\n", encoding="utf-8")
+
+    def vdp_setup(d):
+        d.source.edit.setText(str(data))
+        d.load_data()
+        assert d.columns.count() == 1 and d.table.rowCount() == 1
+        d.record.setValue(2)
+        d.records.setText("1-2")
+    accept(dialogs_tools.VdpDialog, vdp_setup)
+    pages = win.doc.page_count
+    win.variable_data()
+    assert win.doc.page_count == 2 * pages and win.steps[-1]["op"] == "vdp"
+
+    editor = external.ExternalEditor("Py", sys.executable, "-c pass")
+    external.save_editors([editor], win.editors_path)
+    accept(dialogs_tools.EditorsDialog, lambda d: None)
+    win.edit_external_editors()
+    assert [a.text() for a in win.external_menu.actions()] == ["Py"]
+    win.pages.setCurrentRow(0)
+    win.edit_externally(editor)
+    session = win._edit_sessions[0]
+    replacement = PdfDocument.from_bytes(win.doc.to_bytes())
+    replacement.rotate_page(0, 180)
+    replacement.save(session.path)
+    win._poll_edits()
+    win._poll_edits()
+    assert win.doc.page_rotation(0) == 180
+    win.close_edit_sessions()
+    assert not session.folder.exists()
+
+    accept(dialogs_tools.SoftproofDialog, lambda d: d.watermark.setText("PROOF"))
+    target = tmp_path / "proof.pdf"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    win.export_softproof()
+    assert target.exists() and PdfDocument.open(target).page_count == win.doc.page_count + 1
+
+    win.output.softproof.setChecked(True)
+    assert win.output.options().softproof
