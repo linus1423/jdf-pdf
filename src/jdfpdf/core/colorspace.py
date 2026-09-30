@@ -184,3 +184,43 @@ def _indexed_gray(space, index: int) -> float | None:
     if family(base) == "Lab":
         return raw[0] / 255
     return to_gray(base, [v / 255 for v in raw])
+
+
+PROCESS = ("Cyan", "Magenta", "Yellow", "Black")
+
+
+def ink_amount(space, values: list[float], separation: str) -> float | None:
+    """Farbauftrag (0–1) der Farbe ``space``/``values`` im Auszug ``separation``.
+
+    Prozessfarben ergeben sich aus der CMYK-Umrechnung; eine Sonderfarbe erscheint
+    nur in ihrem eigenen Auszug (und ``All`` in jedem). ``None`` bei Mustern.
+    """
+    fam = family(space)
+    if fam == "Separation":
+        name = name_str(space[1])
+        if name == "All":
+            return values[0]
+        if name == "None":
+            return 0.0
+        return values[0] if name == separation else 0.0
+    if fam == "DeviceN":
+        names = [name_str(n) for n in space[1]]
+        return values[names.index(separation)] if separation in names else 0.0
+    if fam == "Indexed":
+        base = space[1]
+        n = components(base)
+        raw = lookup_bytes(space)[int(values[0]) * n:(int(values[0]) + 1) * n]
+        if len(raw) < n:
+            return None
+        scaled = [v / 255 for v in raw]
+        if family(base) == "Lab":
+            scaled = [scaled[0] * 100, raw[1] - 128, raw[2] - 128] if n == 3 else scaled
+        return ink_amount(base, scaled, separation)
+    if fam == "Pattern":
+        return None
+    if separation not in PROCESS:
+        return 0.0
+    cmyk = to_cmyk(space, values)
+    if cmyk is None:
+        return None
+    return min(max(cmyk[PROCESS.index(separation)], 0.0), 1.0)

@@ -7,18 +7,26 @@ Drei Ausgabewege, frei kombinierbar:
 - **JDF-Ticketing**: eine Datei aus JDF-Ticket und direkt angehängten PDF-Daten,
   das Ticket verweist per ``cid:`` auf das Dokument. So erwartet es Canon
   PRISMAsync laut Doku („JDF ticketing“).
+
+Optional kommen CIP3-PPF-Dateien je Bogen (Offset-Farbzonen) und eine CSV mit den
+Zonenwerten dazu; die PPF lässt sich auch einbetten.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .impose import Imposition, Layout, impose
-from .jdf import MIME_TYPE, JobTicket, build_jdf
+from .jdf import MIME_TYPE, JobTicket, Sides, build_jdf
 from .media import Media
 from .pdfdoc import PdfDocument
+
+if TYPE_CHECKING:
+    from .ppf import PressProfile
 
 JDF_ATTACHMENT_NAME = "job.jdf"
 TICKETING_CID = "cid:doc@jdfpdf"
@@ -39,10 +47,15 @@ class OutputOptions:
     sidecar: bool = True
     ticketing: bool = False
     pdfx_policy: PdfxPolicy = PdfxPolicy.KEEP
+    ppf: bool = False  # CIP3-PPF je Bogen neben das PDF schreiben
+    ppf_embed: bool = False  # PPF zusätzlich ins PDF einbetten
+    ppf_profile: "PressProfile | None" = None  # None: erstes Standardprofil
+    preflight: bool = False  # Preflight-Bericht ``<name>_preflight.html`` schreiben
+    language: str = "de"  # Sprache für Berichte
 
     @property
     def any(self) -> bool:
-        return self.embed or self.sidecar or self.ticketing
+        return self.embed or self.sidecar or self.ticketing or self.ppf
 
 
 @dataclass
@@ -52,6 +65,7 @@ class OutputResult:
     embedded: bool = False
     pdfx_version: str | None = None
     warnings: list[str] = field(default_factory=list)
+    preflight: object | None = None  # PreflightReport, falls geprüft
 
 
 def blocks_embedding(doc: PdfDocument) -> str | None:
@@ -95,7 +109,39 @@ def write_output(doc: PdfDocument, ticket: JobTicket, pdf_path: Path, options: O
     ticket = complete_ticket(doc, replace(ticket, pdf_url=pdf_path.name))
     result = OutputResult(pdf=pdf_path, pdfx_version=doc.pdfx_version(), warnings=warnings)
 
+    if options.preflight:
+        from .preflight import Severity, preflight, write_report
+
+        report = preflight(doc, file=pdf_path.name)
+        result.preflight = report
+        result.extra_files.append(write_report(report, pdf_path.with_name(pdf_path.stem + "_preflight.html"),
+                                               options.language))
+        if not report.ok:
+            result.warnings.append(f"preflight_errors:{report.count(Severity.ERROR)}")
+
     blocking = blocks_embedding(doc)
+    ppf_files: list[tuple[str, bytes]] = []
+    if options.ppf or options.ppf_embed:
+        from . import ppf
+
+        profile = options.ppf_profile or ppf.default_profiles()[0]
+        sheets = ppf.analyse(doc, profile, duplex=ticket.sides != Sides.SIMPLEX)
+        names = ppf.ppf_names(pdf_path.stem, len(sheets))
+        ppf_files = [(name, ppf.write_ppf(sheet, ticket.job_name or pdf_path.stem, profile=profile))
+                     for name, sheet in zip(names, sheets)]
+        skipped = sum((side.skipped for sh in sheets for side in (sh.front, sh.back) if side), start=Counter())
+        if skipped:
+            result.warnings.append("ppf_skipped:" + ", ".join(f"{k} {v}" for k, v in sorted(skipped.items())))
+        if options.ppf:
+            zones = pdf_path.with_name(pdf_path.stem + "_zones.csv")
+            zones.write_text(ppf.zones_csv(sheets), encoding="utf-8")
+            result.extra_files.append(zones)
+        if options.ppf_embed:
+            if blocking and options.pdfx_policy == PdfxPolicy.KEEP:
+                result.warnings.append(f"pdfx_skipped:{blocking}")
+            else:
+                for name, data in ppf_files:
+                    doc.attach(name, data, ppf.PPF_MIME, description="CIP3 PPF")
     if options.embed:
         if blocking and options.pdfx_policy == PdfxPolicy.KEEP:
             result.warnings.append(f"pdfx_skipped:{blocking}")
@@ -110,6 +156,11 @@ def write_output(doc: PdfDocument, ticket: JobTicket, pdf_path: Path, options: O
 
     doc.save(pdf_path)
 
+    if options.ppf:
+        for name, data in ppf_files:
+            target = pdf_path.with_name(name)
+            target.write_bytes(data)
+            result.extra_files.append(target)
     if options.sidecar:
         sidecar = pdf_path.with_suffix(".jdf")
         sidecar.write_bytes(build_jdf(ticket))

@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from .core import ppf
 from .core.jdf import ColorModel, Finishing, Fold, JobTicket, Punch, Sides, Staple
 from .core.media import MediaCatalog
 from .core.prepress import OutputOptions, PdfxPolicy, process_file
@@ -33,6 +34,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--embed-into-pdfx", action="store_true", help="auch in PDF/X-1a/3/4 einbetten (bricht ggf. die Konformität)"
     )
+    parser.add_argument("--preflight", action="store_true", help="Preflight-Bericht <name>_preflight.html schreiben")
+    parser.add_argument("--ppf", action="store_true", help="CIP3-PPF je Bogen und Farbzonen-CSV schreiben")
+    parser.add_argument("--ppf-embed", action="store_true", help="PPF ins PDF einbetten")
+    parser.add_argument("--press", help="Name des Maschinenprofils für die Farbzonen")
+    parser.add_argument("--presses", type=Path, help="Maschinenprofile (JSON), sonst Standardprofile")
     args = parser.parse_args(argv)
 
     media = None
@@ -52,11 +58,20 @@ def main(argv: list[str] | None = None) -> int:
             staple=Staple[args.staple.upper()], punch=Punch[args.punch.upper()], fold=Fold[args.fold.upper()]
         ),
     )
+    profile = None
+    if args.press:
+        profile = next((p for p in ppf.load_profiles(args.presses) if p.name == args.press), None)
+        if profile is None:
+            parser.error(f"Maschinenprofil {args.press!r} nicht gefunden")
     options = OutputOptions(
         embed=not args.no_embed,
         sidecar=not args.no_sidecar,
         ticketing=args.ticketing,
         pdfx_policy=PdfxPolicy.EMBED_ANYWAY if args.embed_into_pdfx else PdfxPolicy.KEEP,
+        ppf=args.ppf,
+        ppf_embed=args.ppf_embed,
+        ppf_profile=profile,
+        preflight=args.preflight,
     )
     if not options.any:
         parser.error("Keine Ausgabe gewählt")

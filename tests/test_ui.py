@@ -209,3 +209,35 @@ def test_color_menu(win, tmp_path, monkeypatch):
     win.undo()
     win.detect_color()
     assert win.color_pages == [0, 2]
+
+
+def test_prepress_menu(win, tmp_path):
+    from test_color import colored_pdf
+    from jdfpdf.core import ppf
+    from jdfpdf.ui.dialogs_prepress import PressProfilesDialog
+    path = tmp_path / "c.pdf"
+    path.write_bytes(colored_pdf())
+    win.load(path)
+    dialog = win.run_preflight()
+    assert dialog.table.rowCount() > 3
+    row = next(i for i, f in enumerate(dialog.report.findings) if f.key == "image_low_ppi")
+    dialog.pages_selected.emit(dialog.report.findings[row].pages)
+    assert win.pages.selected_pages() == [0, 2]
+    saved = dialog.save_report(str(tmp_path / "r.pdf"))
+    assert saved.read_bytes().startswith(b"%PDF")
+    dialog.close()
+
+    zones = win.show_ink_zones()
+    assert zones.table.rowCount() == 5 and zones.table.columnCount() == win.output.press_profile().zone_count
+    zones.close()
+
+    profiles = PressProfilesDialog(win.tr_, [ppf.PressProfile("A", 10, 30.0)])
+    profiles.table.item(0, 1).setText("12")
+    assert profiles.profiles()[0].zone_count == 12
+
+    win.output.ppf.setChecked(True)
+    win.output.preflight.setChecked(True)
+    win.project().save(tmp_path / "p.jdfproj")
+    win.output.ppf.setChecked(False)
+    win.load(tmp_path / "p.jdfproj")
+    assert win.output.ppf.isChecked() and win.output.preflight.isChecked()
