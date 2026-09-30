@@ -114,7 +114,23 @@ def _output_from_dict(data: dict) -> OutputOptions:
         sidecar=data.get("sidecar", True),
         ticketing=data.get("ticketing", False),
         pdfx_policy=PdfxPolicy[data.get("pdfx_policy", "KEEP")],
+        ppf=data.get("ppf", False),
+        ppf_embed=data.get("ppf_embed", False),
+        preflight=data.get("preflight", False),
+        finishing_jdf=data.get("finishing_jdf", False),
+        barcode_text=data.get("barcode_text", "{job}-{page}"),
+        language=data.get("language", "de"),
+        ppf_profile=_profile(data.get("ppf_profile")),
     )
+
+
+def _profile(data: dict | None):
+    if not data:
+        return None
+    from .ppf import PressProfile
+
+    known = {f.name for f in fields(PressProfile)}
+    return PressProfile(**{k: v for k, v in data.items() if k in known})
 
 
 __all__ = ["Project", "ticket_from_dict", "SUFFIX"]

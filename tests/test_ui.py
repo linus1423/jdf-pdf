@@ -173,3 +173,128 @@ def test_sheet_view_and_finishing_overlay(win, tmp_path):
     win.layout_panel.layout_combo.set_value(Layout.NONE)
     win.load(tmp_path / "p.jdfproj")
     assert win.layout_panel.layout_combo.value() == Layout.BOOKLET
+
+
+def test_color_menu(win, tmp_path, monkeypatch):
+    from test_color import colored_pdf
+    from jdfpdf.core import spot
+    from jdfpdf.ui import actions_color, dialogs_color
+    path = tmp_path / "c.pdf"
+    path.write_bytes(colored_pdf())
+    win.load(path)
+    win.detect_color()
+    assert win.color_pages == [0, 2]
+    assert win.pages.selected_pages() == [0, 2]
+
+    monkeypatch.setattr(dialogs_color.SplitDialog, "exec", lambda self: True)
+    monkeypatch.setattr(actions_color.QFileDialog, "getSaveFileName", lambda *a, **k: (str(tmp_path / "o.pdf"), ""))
+    win.color_split()
+    assert (tmp_path / "o_color.pdf").exists() and (tmp_path / "o_merge.json").exists()
+
+    dialog = dialogs_color.ImageAdjustDialog(win.tr_, win.doc, 0)
+    assert dialog.list.count() == 1 and dialog.before.pixmap() is not None
+    dialog.saturation.slider.setValue(-100)
+    assert dialog.adjustment().saturation == 0
+
+    spots = dialogs_color.SpotColorsDialog(win.tr_, win.doc, win._spot_library())
+    spots.table.item(0, 0).setText("Rot")
+    win.modify(lambda: spots.apply(win.doc))
+    assert [c.name for c in spot.spot_colors(win.doc)] == ["Rot"]
+
+    win.pages.clearSelection()
+    win.pages.item(0).setSelected(True)
+    win.to_gray()
+    win.detect_color()
+    assert win.color_pages == [2]
+    win.undo()
+    win.detect_color()
+    assert win.color_pages == [0, 2]
+
+
+def test_prepress_menu(win, tmp_path):
+    from test_color import colored_pdf
+    from jdfpdf.core import ppf
+    from jdfpdf.ui.dialogs_prepress import PressProfilesDialog
+    path = tmp_path / "c.pdf"
+    path.write_bytes(colored_pdf())
+    win.load(path)
+    dialog = win.run_preflight()
+    assert dialog.table.rowCount() > 3
+    row = next(i for i, f in enumerate(dialog.report.findings) if f.key == "image_low_ppi")
+    dialog.pages_selected.emit(dialog.report.findings[row].pages)
+    assert win.pages.selected_pages() == [0, 2]
+    saved = dialog.save_report(str(tmp_path / "r.pdf"))
+    assert saved.read_bytes().startswith(b"%PDF")
+    dialog.close()
+
+    zones = win.show_ink_zones()
+    assert zones.table.rowCount() == 5 and zones.table.columnCount() == win.output.press_profile().zone_count
+    zones.close()
+
+    profiles = PressProfilesDialog(win.tr_, [ppf.PressProfile("A", 10, 30.0)])
+    profiles.table.item(0, 1).setText("12")
+    assert profiles.profiles()[0].zone_count == 12
+
+    win.output.ppf.setChecked(True)
+    win.output.preflight.setChecked(True)
+    win.project().save(tmp_path / "p.jdfproj")
+    win.output.ppf.setChecked(False)
+    win.load(tmp_path / "p.jdfproj")
+    assert win.output.ppf.isChecked() and win.output.preflight.isChecked()
+
+
+def test_automation_menu(win, tmp_path, monkeypatch):
+    from conftest import make_pdf
+    from jdfpdf.core import printing
+    from jdfpdf.core.template import Template
+    from jdfpdf.ui import actions_automation
+    from jdfpdf.ui.dialogs_automation import HotfolderDialog, PrinterProfilesDialog, StepsDialog
+
+    win.load(make_pdf(tmp_path / "a.pdf", pages=4))
+    win.pages.item(0).setSelected(True)
+    win._rotate(90)
+    win.pages.item(0).setSelected(True)
+    win.duplicate_pages()
+    assert [s["op"] for s in win.steps] == ["rotate", "duplicate"]
+    win.undo()
+    assert [s["op"] for s in win.steps] == ["rotate"]
+    win.redo()
+    assert len(win.steps) == 2
+
+    path = win.save_template(str(tmp_path / "vorlage"))
+    assert path.suffix == ".jdftpl"
+    template = Template.load(path)
+    assert template.steps[0] == {"op": "rotate", "degrees": 90, "pages": "1"}
+
+    win.load(make_pdf(tmp_path / "b.pdf", pages=4))
+    assert win.steps == []
+    assert win.apply_template_to_doc(template)
+    assert win.doc.page_rotation(0) == 90 and win.doc.page_count == 5
+
+    steps = StepsDialog(win.tr_, win.steps)
+    steps.list.item(0).setSelected(True)
+    steps._remove()
+    assert [s["op"] for s in steps.steps] == ["duplicate"]
+
+    hot = tmp_path / "hot"
+    hot.mkdir()
+    profile = printing.PrinterProfile("Hot", printing.PrinterKind.HOTFOLDER, str(hot))
+    printing.save_printers([profile], win.printers_path)
+    dialog = PrinterProfilesDialog(win.tr_, win.printers(), ["Q1"])
+    assert dialog.profiles()[0].target == str(hot)
+    result = win.send_to_printer(win.printers()[0])
+    assert result is not None and any(hot.iterdir())
+
+    folder = HotfolderDialog(win.tr_, win.printers(), win.catalog)
+    folder.template.edit.setText(str(path))
+    folder.inbox.edit.setText(str(tmp_path / "in"))
+    folder.outbox.edit.setText(str(tmp_path / "out"))
+    folder.toggle()
+    assert folder.folder is not None
+    make_pdf(tmp_path / "in" / "c.pdf")
+    folder.poll()
+    folder.poll()
+    assert (tmp_path / "out" / "c.pdf").exists()
+    folder.toggle()
+    assert folder.folder is None
+    assert actions_automation.SUFFIX == ".jdftpl"

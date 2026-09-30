@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 
 from ..core.jdf import ColorModel, Finishing, Fold, MediaRange, Punch, Sides, Staple
 from ..core.media import Media, MediaCatalog
+from ..core.ppf import PressProfile, load_profiles
 from ..core.prepress import OutputOptions, PdfxPolicy
 from .i18n import Translator
 from .widgets import EnumCombo
@@ -201,14 +202,26 @@ class FinishingPanel(QWidget):
 class OutputPanel(QWidget):
     write_requested = Signal()
     output_intent_requested = Signal()
+    zones_requested = Signal()
 
-    def __init__(self, tr: Translator) -> None:
+    def __init__(self, tr: Translator, profiles: list[PressProfile] | None = None) -> None:
         super().__init__()
         self.tr_ = tr
         self.embed = tr.bind(QCheckBox(checked=True), "out_embed")
         self.sidecar = tr.bind(QCheckBox(checked=True), "out_sidecar")
         self.ticketing = tr.bind(QCheckBox(), "out_ticketing")
         self.pdfx_anyway = tr.bind(QCheckBox(), "out_pdfx_anyway")
+        self.preflight = tr.bind(QCheckBox(), "out_preflight")
+        self.finishing_jdf = tr.bind(QCheckBox(), "out_finishing_jdf")
+        self.ppf = tr.bind(QCheckBox(), "out_ppf")
+        self.ppf_embed = tr.bind(QCheckBox(), "out_ppf_embed")
+        self.profile = QComboBox()
+        self.set_profiles(profiles if profiles is not None else load_profiles())
+        zones_btn = tr.bind(QPushButton(clicked=self.zones_requested), "ink_zones")
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(tr.bind(QLabel(), "press_profile"))
+        profile_row.addWidget(self.profile, 1)
+        profile_row.addWidget(zones_btn)
         self.info = QLabel(wordWrap=True)
         self.warning = QLabel(wordWrap=True)
         self.warning.setStyleSheet("color: #b35c00;")
@@ -219,10 +232,22 @@ class OutputPanel(QWidget):
         self.attachments = QListWidget()
 
         layout = QVBoxLayout(self)
-        for widget in (self.embed, self.sidecar, self.ticketing, self.pdfx_anyway, self.write_btn,
-                       self.info, self.warning, self.intent, intent_btn, self.attachments_label, self.attachments):
+        for widget in (self.embed, self.sidecar, self.ticketing, self.pdfx_anyway, self.preflight, self.finishing_jdf, self.ppf,
+                       self.ppf_embed):
+            layout.addWidget(widget)
+        layout.addLayout(profile_row)
+        for widget in (self.write_btn, self.info, self.warning, self.intent, intent_btn, self.attachments_label,
+                       self.attachments):
             layout.addWidget(widget)
         layout.addStretch()
+
+    def set_profiles(self, profiles: list[PressProfile]) -> None:
+        self.profile.clear()
+        for profile in profiles:
+            self.profile.addItem(profile.name, profile)
+
+    def press_profile(self) -> PressProfile | None:
+        return self.profile.currentData()
 
     def options(self) -> OutputOptions:
         return OutputOptions(
@@ -230,7 +255,29 @@ class OutputPanel(QWidget):
             sidecar=self.sidecar.isChecked(),
             ticketing=self.ticketing.isChecked(),
             pdfx_policy=PdfxPolicy.EMBED_ANYWAY if self.pdfx_anyway.isChecked() else PdfxPolicy.KEEP,
+            ppf=self.ppf.isChecked(),
+            ppf_embed=self.ppf_embed.isChecked(),
+            ppf_profile=self.press_profile(),
+            preflight=self.preflight.isChecked(),
+            finishing_jdf=self.finishing_jdf.isChecked(),
+            language=self.tr_.language,
         )
+
+    def set_options(self, options: OutputOptions) -> None:
+        self.embed.setChecked(options.embed)
+        self.sidecar.setChecked(options.sidecar)
+        self.ticketing.setChecked(options.ticketing)
+        self.pdfx_anyway.setChecked(options.pdfx_policy == PdfxPolicy.EMBED_ANYWAY)
+        self.ppf.setChecked(options.ppf)
+        self.preflight.setChecked(options.preflight)
+        self.finishing_jdf.setChecked(options.finishing_jdf)
+        self.ppf_embed.setChecked(options.ppf_embed)
+        if options.ppf_profile is not None:
+            index = self.profile.findText(options.ppf_profile.name)
+            if index < 0:
+                self.profile.addItem(options.ppf_profile.name, options.ppf_profile)
+                index = self.profile.count() - 1
+            self.profile.setCurrentIndex(index)
 
 
 class SectionsPanel(QWidget):
