@@ -7,8 +7,11 @@ JDF-Jobtickets erzeugen und in das PDF einbetten. PPF (CIP3) mit Farbzonen folgt
 
 - PDF öffnen, Seitenvorschau, Seiten drehen, löschen, per Drag & Drop umsortieren, PDFs anhängen
 - JDF 1.4 (Combined/DigitalPrinting) aus Auftragsdaten erzeugen: Auflage, Simplex/Duplex, Farbe, Papier
-- JDF als Anhang und Associated File (`/AF`, `AFRelationship=Supplement`) einbetten, optional zusätzlich als `.jdf` daneben (für Hotfolder, z. B. Canon PRISMAsync)
-- PDF/X-Erkennung mit Warnung, wenn die Version eingebettete Dateien womöglich nicht erlaubt
+- Ausgabewege frei kombinierbar: JDF eingebettet (Anhang + Associated File), JDF als eigene `.jdf`,
+  JDF-Ticketing für Canon PRISMAsync (JDF + PDF in einer Datei, `cid:`-Verweis)
+- Medienkatalog (lokal, Import aus JMF-Antworten von PRISMAsync/Fiery), Medien je Seitenbereich
+- Weiterverarbeitung im JDF: Heften, Lochen, Falzen, Beschneiden
+- PDF/X: bei PDF/X-1a/3/4/5 wird standardmäßig nicht eingebettet, damit das PDF konform bleibt; Output Intent anzeigen und setzen
 - Stapelverarbeitung in der GUI und per Kommandozeile
 - Oberfläche auf Deutsch und Englisch
 
@@ -17,7 +20,7 @@ JDF-Jobtickets erzeugen und in das PDF einbetten. PPF (CIP3) mit Farbzonen folgt
 ```bash
 pip install -e .
 jdfpdf                 # GUI
-jdfpdf-cli *.pdf -o ausgabe --copies 100 --sides duplex_long_edge --weight 170
+jdfpdf-cli *.pdf -o ausgabe --copies 100 --sides duplex_long_edge --media "A4 160 g" --staple left_two --ticketing
 ```
 
 Unter Linux braucht Qt ggf. Systembibliotheken (`libegl1 libgl1 libxkbcommon0`).

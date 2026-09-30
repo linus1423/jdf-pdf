@@ -110,6 +110,33 @@ class PdfDocument:
         intents = self._pdf.Root.get("/OutputIntents", [])
         return any(intent.get("/S") == Name.GTS_PDFX for intent in intents)
 
+    def output_intent(self) -> dict[str, str] | None:
+        """Erster PDF/X-Output-Intent: Kennung, Info und ob ein ICC-Profil eingebettet ist."""
+        for intent in self._pdf.Root.get("/OutputIntents", []):
+            if intent.get("/S") == Name.GTS_PDFX:
+                return {
+                    "identifier": str(intent.get("/OutputConditionIdentifier", "")),
+                    "info": str(intent.get("/Info", "")),
+                    "profile": "yes" if "/DestOutputProfile" in intent else "no",
+                }
+        return None
+
+    def set_output_intent(self, icc_profile: bytes, identifier: str, components: int = 4, info: str = "") -> None:
+        """PDF/X-Output-Intent mit eingebettetem ICC-Profil setzen (ersetzt vorhandene)."""
+        if components not in (1, 3, 4):
+            raise ValueError("ICC-Profil muss 1, 3 oder 4 Komponenten haben")
+        profile = self._pdf.make_stream(icc_profile)
+        profile.N = components
+        intent = pikepdf.Dictionary(
+            Type=Name.OutputIntent,
+            S=Name.GTS_PDFX,
+            OutputConditionIdentifier=identifier,
+            Info=info or identifier,
+            DestOutputProfile=profile,
+        )
+        others = [i for i in self._pdf.Root.get("/OutputIntents", []) if i.get("/S") != Name.GTS_PDFX]
+        self._pdf.Root.OutputIntents = pikepdf.Array([*others, intent])
+
     # --- Anhänge ------------------------------------------------------------
 
     def attach(
