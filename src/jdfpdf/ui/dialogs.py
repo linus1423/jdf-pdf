@@ -137,3 +137,128 @@ def _num(text: str) -> float | None:
         return float(text.replace(",", ".")) if text else None
     except ValueError:
         return None
+
+
+PAGE_PRESETS = {
+    "A5": (148, 210), "A4": (210, 297), "A3": (297, 420), "SRA3": (320, 450),
+    "Letter": (215.9, 279.4), "Legal": (215.9, 355.6), "Tabloid": (279.4, 431.8),
+}
+
+
+def _mm_spin(value: float = 0, minimum: float = -2000, maximum: float = 2000) -> "QDoubleSpinBox":
+    from PySide6.QtWidgets import QDoubleSpinBox
+
+    spin = QDoubleSpinBox(minimum=minimum, maximum=maximum, decimals=1, suffix=" mm")
+    spin.setValue(value)
+    return spin
+
+
+class _Form(QDialog):
+    """Basis für kleine Formulardialoge mit OK/Abbrechen."""
+
+    def __init__(self, tr: Translator, title_key: str, parent=None) -> None:
+        from PySide6.QtWidgets import QFormLayout
+
+        super().__init__(parent)
+        self.tr_ = tr
+        self.setWindowTitle(tr(title_key))
+        self.form = QFormLayout()
+        self.buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout = QVBoxLayout(self)
+        layout.addLayout(self.form)
+        layout.addWidget(self.buttons)
+
+    def row(self, key: str, widget):
+        self.form.addRow(self.tr_(key), widget)
+        return widget
+
+
+class ScaleDialog(_Form):
+    """Seitenformat ändern: skalieren (anpassen/füllen/verzerren) oder nur Format (100 %)."""
+
+    def __init__(self, tr: Translator, width_mm: float, height_mm: float, parent=None) -> None:
+        from PySide6.QtWidgets import QComboBox
+
+        from ..core.geometry import ScaleMode
+        from .widgets import EnumCombo
+
+        super().__init__(tr, "scale_title", parent)
+        self.preset = self.row("preset", QComboBox())
+        self.preset.addItem("–", None)
+        for name, size in PAGE_PRESETS.items():
+            self.preset.addItem(name, size)
+        self.width = self.row("col_width", _mm_spin(width_mm, 1))
+        self.height = self.row("col_height", _mm_spin(height_mm, 1))
+        self.mode = self.row("scale_mode", EnumCombo(ScaleMode, tr, "scale"))
+        self.scope = self.row("scope", _scope_combo(tr))
+        self.preset.currentIndexChanged.connect(self._apply_preset)
+
+    def _apply_preset(self) -> None:
+        size = self.preset.currentData()
+        if size:
+            self.width.setValue(size[0])
+            self.height.setValue(size[1])
+
+
+class ShiftDialog(_Form):
+    def __init__(self, tr: Translator, parent=None) -> None:
+        from PySide6.QtWidgets import QCheckBox
+
+        super().__init__(tr, "shift_title", parent)
+        self.dx = self.row("shift_x", _mm_spin())
+        self.dy = self.row("shift_y", _mm_spin())
+        self.mirror = self.row("shift_mirror", QCheckBox())
+        self.scope = self.row("scope", _scope_combo(tr))
+
+
+class BleedDialog(_Form):
+    def __init__(self, tr: Translator, parent=None) -> None:
+        super().__init__(tr, "bleed_title", parent)
+        self.bleed = self.row("bleed", _mm_spin(3, 0, 50))
+        self.scope = self.row("scope", _scope_combo(tr))
+
+
+class BoxesDialog(_Form):
+    """Seitenboxen numerisch bearbeiten (Werte in mm, Ursprung unten links)."""
+
+    def __init__(self, tr: Translator, boxes: dict[str, tuple | None], parent=None) -> None:
+        from PySide6.QtWidgets import QCheckBox, QGridLayout, QLabel, QWidget
+
+        from ..core.pdfdoc import BOXES
+
+        super().__init__(tr, "boxes_title", parent)
+        grid_widget = QWidget()
+        grid = QGridLayout(grid_widget)
+        for col, key in enumerate(["", "box_left", "box_bottom", "box_right", "box_top"]):
+            if key:
+                grid.addWidget(QLabel(tr(key)), 0, col)
+        self.fields: dict[str, tuple] = {}
+        for row, name in enumerate(BOXES, start=1):
+            check = QCheckBox(name)
+            rect = boxes.get(name)
+            check.setChecked(rect is not None)
+            check.setEnabled(name != "MediaBox")
+            spins = [_mm_spin((rect[i] / MM) if rect else 0) for i in range(4)]
+            grid.addWidget(check, row, 0)
+            for col, spin in enumerate(spins, start=1):
+                grid.addWidget(spin, row, col)
+            self.fields[name] = (check, spins)
+        self.form.addRow(grid_widget)
+        self.scope = self.row("scope", _scope_combo(tr))
+
+    def boxes(self) -> dict[str, tuple | None]:
+        return {
+            name: tuple(s.value() * MM for s in spins) if check.isChecked() else None
+            for name, (check, spins) in self.fields.items()
+        }
+
+
+def _scope_combo(tr: Translator):
+    from PySide6.QtWidgets import QComboBox
+
+    combo = QComboBox()
+    combo.addItem(tr("scope_selection"), "selection")
+    combo.addItem(tr("scope_all"), "all")
+    return combo

@@ -58,3 +58,118 @@ def test_ticket_from_panels(win, sample_pdf, tmp_path):
     res = write_output(win.doc, ticket, tmp_path / "out.pdf", win.output.options())
     assert len(res.extra_files) == 2
     assert b"RunIndex=\"1 2\"" in PdfDocument.open(tmp_path / "out.pdf").attachment_data("job.jdf")
+
+
+def test_undo_redo_and_composition(win, sample_pdf, tmp_path):
+    win.load(sample_pdf)
+    win.pages.item(0).setSelected(True)
+    win.duplicate_pages()
+    assert win.doc.page_count == 4
+    win.insert_blank()
+    assert win.doc.page_count == 5
+    win.undo()
+    win.undo()
+    assert win.doc.page_count == 3
+    win.redo()
+    assert win.doc.page_count == 4
+    from conftest import make_pdf
+    extra = make_pdf(tmp_path / "Anhang.pdf", pages=2)
+    win.insert_files([extra], at=None)
+    assert win.doc.page_count == 6
+    assert [s.title for s in win.doc.sections()] == ["Anhang"]
+    assert win.sections.tree.topLevelItemCount() == 1
+
+
+def test_failed_modify_restores(win, sample_pdf, monkeypatch):
+    win.load(sample_pdf)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "critical", lambda *a, **k: None)
+
+    def broken():
+        win.doc.delete_pages([0])
+        raise RuntimeError("kaputt")
+
+    assert not win.modify(broken)
+    assert win.doc.page_count == 3
+    assert not win.history.can_undo
+
+
+def test_project_save_load(win, sample_pdf, tmp_path):
+    win.load(sample_pdf)
+    win.job.copies.setValue(9)
+    win.finishing.staple.set_value(Staple.TOP_LEFT)
+    win.output.ticketing.setChecked(True)
+    win.project().save(tmp_path / "p.jdfproj")
+    win.job.copies.setValue(1)
+    win.output.ticketing.setChecked(False)
+    win.load(tmp_path / "p.jdfproj")
+    assert win.job.copies.value() == 9
+    assert win.finishing.staple.value() == Staple.TOP_LEFT
+    assert win.output.ticketing.isChecked()
+    assert win.doc.page_count == 3
+
+
+def test_page_view_shows_boxes(win, sample_pdf):
+    win.load(sample_pdf)
+    win.modify(lambda: win.doc.add_bleed(0, 10))
+    win._show_page(0)
+    assert win.page_view._page_item is not None
+    assert any(item.toolTip() == "BleedBox" for item in win.page_view._box_items)
+    guide = win.page_view.add_guide(True, 50)
+    assert guide in win.page_view.guides
+    win.page_view.clear_guides()
+    assert not win.page_view.guides
+
+
+def test_element_dialogs(win, sample_pdf, monkeypatch):
+    from jdfpdf.ui import dialogs_elements as de
+    win.load(sample_pdf)
+    monkeypatch.setattr(de.ElementDialog, "exec", lambda self: True)
+    monkeypatch.setattr(de.MarksDialog, "exec", lambda self: True)
+    win.pages.item(0).setSelected(True)
+    win.add_element()
+    from jdfpdf.core.layers import layer_kinds
+    assert layer_kinds(win.doc, 0) == ["element"]
+    assert layer_kinds(win.doc, 1) == []
+    win.printer_marks()
+    assert "marks" in layer_kinds(win.doc, 0)
+    win.undo()
+    assert "marks" not in layer_kinds(win.doc, 0)
+    # Dialog-Voreinstellungen
+    d = de.ElementDialog(win.tr_)
+    d.preset.setCurrentIndex(d.preset.findData("preset_watermark"))
+    assert d.element().rotation == 45 and d.element().text == "ENTWURF"
+
+
+def test_tab_sheets_assign_media(win, sample_pdf, monkeypatch):
+    from jdfpdf.core.pdfdoc import Section
+    from jdfpdf.ui import dialogs_elements as de
+    win.load(sample_pdf)
+    win.modify(lambda: win.doc.set_sections([Section("A", 0), Section("B", 2)]))
+    monkeypatch.setattr(de.TabSheetDialog, "exec", lambda self: True)
+    win.insert_tab_sheets()
+    assert win.doc.page_count == 5
+    ranges = win.media.media_ranges()
+    assert [(r.first, r.media.name) for r in ranges] == [(0, "A4 Register 5er"), (3, "A4 Register 5er")]
+
+
+def test_sheet_view_and_finishing_overlay(win, tmp_path):
+    from conftest import make_pdf
+    from jdfpdf.core.impose import Layout
+    from jdfpdf.core.jdf import Punch
+    win.load(make_pdf(tmp_path / "b.pdf", pages=8))
+    win.finishing.punch.set_value(Punch.FOUR_LEFT)
+    win._show_page(0)
+    assert len(win.page_view._overlay_items) == 4
+    win.layout_panel.layout_combo.set_value(Layout.BOOKLET)
+    win.layout_panel.auto_sheet.setChecked(True)
+    assert win.finishing.staple.value() == Staple.SADDLE  # automatisch gesetzt
+    win.layout_panel.sheet_view.setChecked(True)
+    assert win.sheet_mode
+    assert win.pages.count() == 4
+    assert not win.act_delete.isEnabled()
+    win.layout_panel.sheet_view.setChecked(False)
+    assert win.pages.count() == 8
+    win.project().save(tmp_path / "p.jdfproj")
+    win.layout_panel.layout_combo.set_value(Layout.NONE)
+    win.load(tmp_path / "p.jdfproj")
+    assert win.layout_panel.layout_combo.value() == Layout.BOOKLET

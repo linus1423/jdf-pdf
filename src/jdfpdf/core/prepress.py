@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
+from .impose import Imposition, Layout, impose
 from .jdf import MIME_TYPE, JobTicket, build_jdf
 from .media import Media
 from .pdfdoc import PdfDocument
@@ -76,13 +77,23 @@ def ticketing_bytes(doc: PdfDocument, ticket: JobTicket) -> bytes:
     return jdf + doc.to_bytes()
 
 
-def write_output(doc: PdfDocument, ticket: JobTicket, pdf_path: Path, options: OutputOptions) -> OutputResult:
-    """PDF samt JDF gemäß ``options`` schreiben."""
+def write_output(doc: PdfDocument, ticket: JobTicket, pdf_path: Path, options: OutputOptions,
+                 imposition: Imposition | None = None) -> OutputResult:
+    """PDF samt JDF gemäß ``options`` schreiben; mit ``imposition`` wird vorher ausgeschossen."""
     if not options.any:
         raise ValueError("Keine Ausgabe gewählt")
     pdf_path = Path(pdf_path)
+    warnings = []
+    if imposition is not None and imposition.layout != Layout.NONE:
+        doc = impose(doc, imposition)
+        if ticket.media_ranges:
+            # Seitenbereiche beziehen sich auf die Einzelseiten, nicht auf die Bögen
+            warnings.append("media_ranges_dropped:")
+            ticket = replace(ticket, media_ranges=[])
+        if ticket.media is not None and ticket.media.name == "default":
+            ticket = replace(ticket, media=None)
     ticket = complete_ticket(doc, replace(ticket, pdf_url=pdf_path.name))
-    result = OutputResult(pdf=pdf_path, pdfx_version=doc.pdfx_version())
+    result = OutputResult(pdf=pdf_path, pdfx_version=doc.pdfx_version(), warnings=warnings)
 
     blocking = blocks_embedding(doc)
     if options.embed:
@@ -110,9 +121,10 @@ def write_output(doc: PdfDocument, ticket: JobTicket, pdf_path: Path, options: O
     return result
 
 
-def process_file(src: Path, dst_dir: Path, ticket: JobTicket, options: OutputOptions | None = None) -> OutputResult:
+def process_file(src: Path, dst_dir: Path, ticket: JobTicket, options: OutputOptions | None = None,
+                 imposition: Imposition | None = None) -> OutputResult:
     """Ein PDF für den Stapel verarbeiten; Auftragsname ist der Dateiname, falls leer."""
     doc = PdfDocument.open(src)
     dst_dir.mkdir(parents=True, exist_ok=True)
     ticket = replace(ticket, job_name=ticket.job_name or Path(src).stem)
-    return write_output(doc, ticket, dst_dir / Path(src).name, options or OutputOptions())
+    return write_output(doc, ticket, dst_dir / Path(src).name, options or OutputOptions(), imposition)
