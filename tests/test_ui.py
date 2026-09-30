@@ -173,3 +173,39 @@ def test_sheet_view_and_finishing_overlay(win, tmp_path):
     win.layout_panel.layout_combo.set_value(Layout.NONE)
     win.load(tmp_path / "p.jdfproj")
     assert win.layout_panel.layout_combo.value() == Layout.BOOKLET
+
+
+def test_color_menu(win, tmp_path, monkeypatch):
+    from test_color import colored_pdf
+    from jdfpdf.core import spot
+    from jdfpdf.ui import actions_color, dialogs_color
+    path = tmp_path / "c.pdf"
+    path.write_bytes(colored_pdf())
+    win.load(path)
+    win.detect_color()
+    assert win.color_pages == [0, 2]
+    assert win.pages.selected_pages() == [0, 2]
+
+    monkeypatch.setattr(dialogs_color.SplitDialog, "exec", lambda self: True)
+    monkeypatch.setattr(actions_color.QFileDialog, "getSaveFileName", lambda *a, **k: (str(tmp_path / "o.pdf"), ""))
+    win.color_split()
+    assert (tmp_path / "o_color.pdf").exists() and (tmp_path / "o_merge.json").exists()
+
+    dialog = dialogs_color.ImageAdjustDialog(win.tr_, win.doc, 0)
+    assert dialog.list.count() == 1 and dialog.before.pixmap() is not None
+    dialog.saturation.slider.setValue(-100)
+    assert dialog.adjustment().saturation == 0
+
+    spots = dialogs_color.SpotColorsDialog(win.tr_, win.doc, win._spot_library())
+    spots.table.item(0, 0).setText("Rot")
+    win.modify(lambda: spots.apply(win.doc))
+    assert [c.name for c in spot.spot_colors(win.doc)] == ["Rot"]
+
+    win.pages.clearSelection()
+    win.pages.item(0).setSelected(True)
+    win.to_gray()
+    win.detect_color()
+    assert win.color_pages == [2]
+    win.undo()
+    win.detect_color()
+    assert win.color_pages == [0, 2]

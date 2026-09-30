@@ -15,6 +15,7 @@ dependencies = [
     "pypdfium2>=4.20",   # Apache-2.0 / BSD-3
     "lxml>=5.0",         # BSD
     "reportlab>=4.0",    # BSD (Stempel, Marken, Barcodes)
+    "Pillow>=10.0",      # MIT-CMU (HPND)
 ]
 
 [project.optional-dependencies]

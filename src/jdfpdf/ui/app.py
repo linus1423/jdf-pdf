@@ -31,6 +31,7 @@ from ..core.pdfdoc import BOXES, PdfDocument, Section
 from ..core.prepress import process_file, write_output
 from ..core.project import SUFFIX, Project
 from ..core.render import render_page_media, render_pages
+from .actions_color import ColorActions
 from .dialogs import BleedDialog, BoxesDialog, MediaCatalogDialog, ScaleDialog, ShiftDialog
 from .dialogs_elements import BleedTabDialog, ElementDialog, MarksDialog, SpineDialog, TabSheetDialog
 from .i18n import LANGUAGES, Translator
@@ -109,12 +110,13 @@ class _TabLabel:
         self.tabs.setTabText(self.index, text)
 
 
-class MainWindow(QMainWindow):
+class MainWindow(ColorActions, QMainWindow):
     def __init__(self, settings: QSettings | None = None, catalog_path: Path | None = None) -> None:
         super().__init__()
         self.settings = settings or QSettings("jdfpdf", "jdfpdf")
         self.tr_ = Translator(str(self.settings.value("language", "de")))
         self.catalog_path = catalog_path
+        self.spot_library_path = Path(catalog_path).with_name("spots.json") if catalog_path else None
         self.catalog = MediaCatalog.load(catalog_path)
         self.doc: PdfDocument | None = None
         self.view_doc: PdfDocument | None = None  # angezeigtes Dokument (Einzelseiten oder Bögen)
@@ -261,6 +263,8 @@ class MainWindow(QMainWindow):
         menu_elements.addSeparator()
         menu_elements.addActions([self.act_spine, self.act_marks, self.act_remove_marks])
 
+        color_actions = self._build_color_menu(action)
+
         menu_view = tr.bind(self.menuBar().addMenu(""), "view", "setTitle")
         menu_view.addActions([self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit])
         menu_view.addSeparator()
@@ -287,7 +291,7 @@ class MainWindow(QMainWindow):
             self.act_rot_r, self.act_delete, self.act_duplicate, self.act_blank, self.act_replace,
             self.act_scale, self.act_shift, self.act_boxes, self.act_bleed, self.act_element,
             self.act_remove_elements, self.act_tab_sheets, self.act_bleed_tabs, self.act_remove_tabs,
-            self.act_spine, self.act_marks, self.act_remove_marks, self.act_repeat,
+            self.act_spine, self.act_marks, self.act_remove_marks, self.act_repeat, *color_actions,
         ]
 
     def _set_language(self, code: str) -> None:
@@ -363,6 +367,7 @@ class MainWindow(QMainWindow):
 
     def _refresh(self) -> None:
         current = max(self.pages.currentRow(), 0)
+        self.color_pages = None  # Seiten können sich geändert haben
         self.pages.blockSignals(True)
         self.pages.clear()
         self.view_doc = self.doc
