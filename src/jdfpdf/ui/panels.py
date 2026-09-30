@@ -213,6 +213,7 @@ class OutputPanel(QWidget):
         self.pdfx_anyway = tr.bind(QCheckBox(), "out_pdfx_anyway")
         self.preflight = tr.bind(QCheckBox(), "out_preflight")
         self.finishing_jdf = tr.bind(QCheckBox(), "out_finishing_jdf")
+        self.softproof = tr.bind(QCheckBox(), "out_softproof")
         self.ppf = tr.bind(QCheckBox(), "out_ppf")
         self.ppf_embed = tr.bind(QCheckBox(), "out_ppf_embed")
         self.profile = QComboBox()
@@ -232,8 +233,8 @@ class OutputPanel(QWidget):
         self.attachments = QListWidget()
 
         layout = QVBoxLayout(self)
-        for widget in (self.embed, self.sidecar, self.ticketing, self.pdfx_anyway, self.preflight, self.finishing_jdf, self.ppf,
-                       self.ppf_embed):
+        for widget in (self.embed, self.sidecar, self.ticketing, self.pdfx_anyway, self.preflight, self.finishing_jdf,
+                       self.softproof, self.ppf, self.ppf_embed):
             layout.addWidget(widget)
         layout.addLayout(profile_row)
         for widget in (self.write_btn, self.info, self.warning, self.intent, intent_btn, self.attachments_label,
@@ -260,6 +261,7 @@ class OutputPanel(QWidget):
             ppf_profile=self.press_profile(),
             preflight=self.preflight.isChecked(),
             finishing_jdf=self.finishing_jdf.isChecked(),
+            softproof=self.softproof.isChecked(),
             language=self.tr_.language,
         )
 
@@ -271,6 +273,7 @@ class OutputPanel(QWidget):
         self.ppf.setChecked(options.ppf)
         self.preflight.setChecked(options.preflight)
         self.finishing_jdf.setChecked(options.finishing_jdf)
+        self.softproof.setChecked(options.softproof)
         self.ppf_embed.setChecked(options.ppf_embed)
         if options.ppf_profile is not None:
             index = self.profile.findText(options.ppf_profile.name)

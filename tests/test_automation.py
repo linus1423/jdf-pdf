@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 import threading
@@ -170,12 +171,18 @@ def test_printer_profiles_and_hotfolder_send(tmp_path, controller):
     assert [p.kind for p in loaded] == [printing.PrinterKind.HOTFOLDER, printing.PrinterKind.HOTFOLDER,
                                         printing.PrinterKind.JMF]
     doc = PdfDocument.open(make_pdf(tmp_path / "a.pdf"))
-    before = doc.to_bytes()
+
+    def content(d):  # qpdf erneuert sonst den zweiten Teil der /ID zeitabhängig
+        buf = io.BytesIO()
+        d.pdf.save(buf, deterministic_id=True)
+        return buf.getvalue()
+
+    before = content(doc)
     result = printing.send(loaded[0], doc, JobTicket("Mein Auftrag", ""))
     assert sorted(p.name for p in folder.iterdir()) == ["Mein_Auftrag.jdf", "Mein_Auftrag.pdf"]
     printing.send(loaded[1], doc, JobTicket("Mein Auftrag", ""))
     assert (folder / "Mein_Auftrag_prismasync.jdf").read_bytes().count(b"%PDF") == 1
-    assert doc.to_bytes() == before  # Dokument unverändert
+    assert content(doc) == before  # Dokument unverändert
     assert printing.send(loaded[2], doc, JobTicket("x", "")).queue_entry == "qe42"
     assert result.files
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -23,10 +24,11 @@ from PySide6.QtWidgets import (
     QTabWidget,
 )
 
-from ..core import elements, geometry, impose, marks, ppf, spine, tabs
+from ..core import elements, geometry, impose, marks, office, ppf, spine, tabs
 from ..core.history import History
+from ..core.importers import IMAGE_SUFFIXES, is_supported, load_document
 from ..core.jdf import JobTicket
-from ..core.media import MM, MediaCatalog
+from ..core.media import MEDIA_RGB, MM, MediaCatalog
 from ..core.pdfdoc import BOXES, PdfDocument, Section
 from ..core.prepress import process_file, write_output
 from ..core.project import SUFFIX, Project
@@ -36,6 +38,7 @@ from ..core.render import render_page_media, render_pages
 from .actions_automation import AutomationActions
 from .actions_color import ColorActions
 from .actions_prepress import PrepressActions
+from .actions_tools import ToolsActions
 from .dialogs import BleedDialog, BoxesDialog, MediaCatalogDialog, ScaleDialog, ShiftDialog
 from .dialogs_elements import BleedTabDialog, ElementDialog, MarksDialog, SpineDialog, TabSheetDialog
 from .i18n import LANGUAGES, Translator
@@ -43,13 +46,9 @@ from .pageview import PageView
 from .panels import FinishingPanel, JobPanel, LayoutPanel, MediaPanel, OutputPanel, SectionsPanel
 
 PAGE_ROLE = Qt.ItemDataRole.UserRole
-IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 
 # Anzeige der JDF-Medienfarben in der Seitenübersicht
-MEDIA_COLORS = {
-    "white": "#ffffff", "yellow": "#fff4a3", "blue": "#cfe3ff", "green": "#d4f5d0", "pink": "#ffd6e7",
-    "red": "#ffc9c2", "orange": "#ffe0b8", "gray": "#e3e3e3", "grey": "#e3e3e3", "ivory": "#fffbe8",
-}
+MEDIA_COLORS = MEDIA_RGB
 
 
 class PageList(QListWidget):
@@ -114,7 +113,7 @@ class _TabLabel:
         self.tabs.setTabText(self.index, text)
 
 
-class MainWindow(ColorActions, PrepressActions, AutomationActions, QMainWindow):
+class MainWindow(ColorActions, PrepressActions, AutomationActions, ToolsActions, QMainWindow):
     def __init__(self, settings: QSettings | None = None, catalog_path: Path | None = None) -> None:
         super().__init__()
         self.settings = settings or QSettings("jdfpdf", "jdfpdf")
@@ -123,6 +122,7 @@ class MainWindow(ColorActions, PrepressActions, AutomationActions, QMainWindow):
         self.spot_library_path = Path(catalog_path).with_name("spots.json") if catalog_path else None
         self.press_profiles_path = Path(catalog_path).with_name("presses.json") if catalog_path else None
         self.printers_path = Path(catalog_path).with_name("printers.json") if catalog_path else None
+        self.editors_path = Path(catalog_path).with_name("editors.json") if catalog_path else None
         self.catalog = MediaCatalog.load(catalog_path)
         self.doc: PdfDocument | None = None
         self.view_doc: PdfDocument | None = None  # angezeigtes Dokument (Einzelseiten oder Bögen)
@@ -273,6 +273,7 @@ class MainWindow(ColorActions, PrepressActions, AutomationActions, QMainWindow):
         color_actions = self._build_color_menu(action)
         prepress_actions = self._build_prepress_menu(action)
         automation_actions = self._build_automation_menu(action)
+        tools_actions = self._build_tools_menu(action)
 
         menu_view = tr.bind(self.menuBar().addMenu(""), "view", "setTitle")
         menu_view.addActions([self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit])
@@ -301,7 +302,7 @@ class MainWindow(ColorActions, PrepressActions, AutomationActions, QMainWindow):
             self.act_scale, self.act_shift, self.act_boxes, self.act_bleed, self.act_element,
             self.act_remove_elements, self.act_tab_sheets, self.act_bleed_tabs, self.act_remove_tabs,
             self.act_spine, self.act_marks, self.act_remove_marks, self.act_repeat, *color_actions, *prepress_actions,
-            *automation_actions,
+            *automation_actions, *tools_actions,
         ]
 
     def _set_language(self, code: str) -> None:
@@ -497,7 +498,7 @@ class MainWindow(ColorActions, PrepressActions, AutomationActions, QMainWindow):
     # --- Dateien ------------------------------------------------------------
 
     def open_pdf(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, self.tr_("open"), "", self.tr_("pdf_filter"))
+        path, _ = QFileDialog.getOpenFileName(self, self.tr_("open"), "", self.tr_("open_filter"))
         if path:
             self._guard(lambda: self.load(Path(path)))
 
@@ -506,13 +507,16 @@ class MainWindow(ColorActions, PrepressActions, AutomationActions, QMainWindow):
         if path.suffix.lower() == SUFFIX:
             self.load_project(path)
             return
-        if path.suffix.lower() in IMAGE_SUFFIXES:
-            from ..core.images import images_to_pdf
-
-            self.doc = PdfDocument.from_bytes(images_to_pdf([path]))
-            self.doc.path = path.with_suffix(".pdf")
+        if office.is_office(path):
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                doc = load_document(path)
+            finally:
+                QApplication.restoreOverrideCursor()
         else:
-            self.doc = PdfDocument.open(path)
+            doc = load_document(path)
+        self.doc = doc
+        self.close_edit_sessions()
         self.history.clear()
         self.steps = []
         self.job.name.setText(path.stem)
@@ -521,7 +525,7 @@ class MainWindow(ColorActions, PrepressActions, AutomationActions, QMainWindow):
         self._refresh()
 
     def insert_files(self, paths: list[Path], at: int | None = None) -> None:
-        """PDFs und Bilder einfügen (Drag & Drop); jede PDF wird ein eigener Abschnitt."""
+        """PDFs, Bilder und Office-Dateien einfügen (auch per Drag & Drop); jede Datei wird ein Abschnitt."""
         if self.doc is None:
             if not paths:
                 return
@@ -534,19 +538,19 @@ class MainWindow(ColorActions, PrepressActions, AutomationActions, QMainWindow):
             position = self.doc.page_count if at is None else at
             for path in paths:
                 suffix = path.suffix.lower()
-                if suffix == ".pdf":
-                    other = PdfDocument.open(path)
+                if suffix in IMAGE_SUFFIXES:
+                    position += self.doc.insert_images([path], position)
+                elif is_supported(path):
+                    other = load_document(path)
                     self.doc.insert_pages_from(other, position, section=path.stem)
                     position += other.page_count
-                elif suffix in IMAGE_SUFFIXES:
-                    position += self.doc.insert_images([path], position)
                 else:
                     raise ValueError(self.tr_("unsupported_file", path.name))
 
         self.modify(run)
 
     def insert_pdf(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, self.tr_("insert_pdf"), "", self.tr_("pdf_filter"))
+        paths, _ = QFileDialog.getOpenFileNames(self, self.tr_("insert_pdf"), "", self.tr_("open_filter"))
         if paths:
             self.insert_files([Path(p) for p in paths], self._insert_position())
 
@@ -903,7 +907,7 @@ class MainWindow(ColorActions, PrepressActions, AutomationActions, QMainWindow):
             self._refresh_info()
 
     def batch(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, self.tr_("batch"), "", self.tr_("pdf_filter"))
+        paths, _ = QFileDialog.getOpenFileNames(self, self.tr_("batch"), "", self.tr_("open_filter"))
         if not paths:
             return
         out = QFileDialog.getExistingDirectory(self, self.tr_("choose_output"))
@@ -940,6 +944,9 @@ def main() -> int:
     if len(sys.argv) > 1:
         window.load(Path(sys.argv[1]))
     window.show()
+    if os.environ.get("JDFPDF_SMOKE_TEST"):  # Paketprüfung: Fenster aufbauen und beenden
+        print(f"ok {window.doc.page_count if window.doc else 0}")
+        return 0
     return app.exec()
 
 

@@ -15,10 +15,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from .importers import SUPPORTED
 from .media import MediaCatalog
 from .template import Template, run_template
 
-ACCEPTED = {".pdf", ".jpg", ".jpeg", ".png", ".tif", ".tiff"}
+ACCEPTED = SUPPORTED - {".txt"}  # PDF, Bilder und Office-Dateien (Textdateien sind oft nur Notizen)
 
 
 @dataclass

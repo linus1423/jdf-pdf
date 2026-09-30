@@ -344,6 +344,68 @@ def _op_output_intent(doc, step, ctx):
     doc.set_output_intent(data, step.get("identifier", Path(step["icc"]).stem), components, step.get("info", ""))
 
 
+def _op_insert_file(doc, step, ctx):
+    """Beliebige unterstützte Datei (PDF, Bild, Office) einfügen."""
+    from .importers import load_document
+
+    at = step.get("at")
+    path = ctx.path(step["path"])
+    doc.insert_pages_from(load_document(path), None if at in (None, "end") else int(at), step.get("section"))
+
+
+def _op_cleanup(doc, step, ctx):
+    from . import cleanup
+
+    angles = cleanup.cleanup_pages(doc, _pages(doc, step), build(cleanup.CleanupOptions, step.get("options", step)))
+    turned = {i: a for i, a in angles.items() if a}
+    if turned:
+        ctx.log.append("deskew:" + ", ".join(f"{i + 1}: {a:+.2f}°" for i, a in turned.items()))
+
+
+def _op_rasterize(doc, step, ctx):
+    from . import cleanup
+
+    cleanup.rasterize_pages(doc, _pages(doc, step), int(step.get("dpi", 300)), step.get("mode", "keep"))
+
+
+def _op_text_block(doc, step, ctx):
+    from . import textedit
+
+    textedit.add_text_block(doc, _pages(doc, step), build(textedit.TextBlock, step.get("block", {})))
+
+
+def _op_replace_text(doc, step, ctx):
+    from . import textedit
+
+    pages = _pages(doc, step) if step.get("pages") else None
+    if step.get("rewrite"):
+        report = textedit.rewrite_text(doc, step["find"], step.get("replace", ""), pages)
+        ctx.log.extend(f"rewrite_skipped:{reason}" for reason in report.skipped)
+        count = report.replaced
+    else:
+        count = textedit.replace_text(doc, step["find"], step.get("replace", ""), pages,
+                                      build(textedit.ReplaceStyle, step.get("style", {})),
+                                      bool(step.get("match_case")), bool(step.get("whole_word")))
+    if not count:
+        ctx.log.append(f"text_not_found:{step['find']}")
+
+
+def _op_remove_text_edits(doc, step, ctx):
+    from . import textedit
+
+    textedit.remove_text_edits(doc, _pages(doc, step))
+
+
+def _op_vdp(doc, step, ctx):
+    """Dokument als Vorlage je Datensatz wiederholen und die Felder füllen."""
+    from . import vdp
+
+    setup = vdp.VdpSetup.from_dict(step)
+    data = vdp.read_data(ctx.path(setup.data), setup.sheet)
+    records = parse_pages(setup.records, len(data.rows)) if setup.records else None
+    vdp.merge_in_place(doc, data, setup.fields, records, setup.sections)
+
+
 OPS: dict[str, Callable[[PdfDocument, dict, RunContext], None]] = {
     "rotate": _op_rotate, "delete": _op_delete, "duplicate": _op_duplicate, "insert_blank": _op_insert_blank,
     "insert_pdf": _op_insert_pdf, "insert_images": _op_insert_images, "scale": _op_scale, "shift": _op_shift,
@@ -354,6 +416,9 @@ OPS: dict[str, Callable[[PdfDocument, dict, RunContext], None]] = {
     "spine": _op_spine, "gray": _op_gray, "gray_bw_pages": _op_gray_bw_pages, "image_adjust": _op_image_adjust,
     "spot_rename": _op_spot_rename, "spot_alternate": _op_spot_alternate, "spot_merge": _op_spot_merge,
     "spot_library": _op_spot_library, "repeat": _op_repeat, "output_intent": _op_output_intent,
+    "insert_file": _op_insert_file, "cleanup": _op_cleanup, "rasterize": _op_rasterize,
+    "text_block": _op_text_block, "replace_text": _op_replace_text, "remove_text_edits": _op_remove_text_edits,
+    "vdp": _op_vdp,
 }
 
 
@@ -407,14 +472,11 @@ def apply_template(doc: PdfDocument, template: Template, source: Path | None = N
 
 def run_template(source: Path, dst_dir: Path, template: Template, overrides: dict[str, Any] | None = None,
                  catalog: MediaCatalog | None = None, base_dir: Path | None = None) -> OutputResult:
-    """Datei (PDF oder Bild) mit der Vorlage verarbeiten und ausgeben."""
-    source = Path(source)
-    if source.suffix.lower() in (".jpg", ".jpeg", ".png", ".tif", ".tiff"):
-        from .images import images_to_pdf
+    """Datei (PDF, Bild oder Office) mit der Vorlage verarbeiten und ausgeben."""
+    from .importers import load_document
 
-        doc = PdfDocument.from_bytes(images_to_pdf([source]))
-    else:
-        doc = PdfDocument.open(source)
+    source = Path(source)
+    doc = load_document(source)
     ticket, output, imposition, ctx = apply_template(doc, template, source, overrides, catalog, base_dir)
     dst_dir = Path(dst_dir)
     dst_dir.mkdir(parents=True, exist_ok=True)
