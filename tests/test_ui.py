@@ -118,3 +118,35 @@ def test_page_view_shows_boxes(win, sample_pdf):
     assert guide in win.page_view.guides
     win.page_view.clear_guides()
     assert not win.page_view.guides
+
+
+def test_element_dialogs(win, sample_pdf, monkeypatch):
+    from jdfpdf.ui import dialogs_elements as de
+    win.load(sample_pdf)
+    monkeypatch.setattr(de.ElementDialog, "exec", lambda self: True)
+    monkeypatch.setattr(de.MarksDialog, "exec", lambda self: True)
+    win.pages.item(0).setSelected(True)
+    win.add_element()
+    from jdfpdf.core.layers import layer_kinds
+    assert layer_kinds(win.doc, 0) == ["element"]
+    assert layer_kinds(win.doc, 1) == []
+    win.printer_marks()
+    assert "marks" in layer_kinds(win.doc, 0)
+    win.undo()
+    assert "marks" not in layer_kinds(win.doc, 0)
+    # Dialog-Voreinstellungen
+    d = de.ElementDialog(win.tr_)
+    d.preset.setCurrentIndex(d.preset.findData("preset_watermark"))
+    assert d.element().rotation == 45 and d.element().text == "ENTWURF"
+
+
+def test_tab_sheets_assign_media(win, sample_pdf, monkeypatch):
+    from jdfpdf.core.pdfdoc import Section
+    from jdfpdf.ui import dialogs_elements as de
+    win.load(sample_pdf)
+    win.modify(lambda: win.doc.set_sections([Section("A", 0), Section("B", 2)]))
+    monkeypatch.setattr(de.TabSheetDialog, "exec", lambda self: True)
+    win.insert_tab_sheets()
+    assert win.doc.page_count == 5
+    ranges = win.media.media_ranges()
+    assert [(r.first, r.media.name) for r in ranges] == [(0, "A4 Register 5er"), (3, "A4 Register 5er")]

@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QTabWidget,
 )
 
-from ..core import geometry
+from ..core import elements, geometry, marks, spine, tabs
 from ..core.history import History
 from ..core.jdf import JobTicket
 from ..core.media import MM, MediaCatalog
@@ -32,6 +32,7 @@ from ..core.prepress import process_file, write_output
 from ..core.project import SUFFIX, Project
 from ..core.render import render_page_media, render_pages
 from .dialogs import BleedDialog, BoxesDialog, MediaCatalogDialog, ScaleDialog, ShiftDialog
+from .dialogs_elements import BleedTabDialog, ElementDialog, MarksDialog, SpineDialog, TabSheetDialog
 from .i18n import LANGUAGES, Translator
 from .pageview import PageView
 from .panels import FinishingPanel, JobPanel, MediaPanel, OutputPanel, SectionsPanel
@@ -209,6 +210,15 @@ class MainWindow(QMainWindow):
         self.act_boxes = action("edit_boxes", self.edit_boxes)
         self.act_bleed = action("add_bleed", self.add_bleed)
 
+        self.act_element = action("add_element", self.add_element, "Ctrl+T")
+        self.act_remove_elements = action("remove_elements", self.remove_elements)
+        self.act_tab_sheets = action("insert_tab_sheets", self.insert_tab_sheets)
+        self.act_bleed_tabs = action("bleed_tabs", self.bleed_tabs)
+        self.act_remove_tabs = action("remove_tabs", self.remove_tabs)
+        self.act_spine = action("spine_text", self.spine_text)
+        self.act_marks = action("printer_marks", self.printer_marks)
+        self.act_remove_marks = action("remove_marks", self.remove_marks)
+
         self.act_zoom_in = action("zoom_in", lambda: self.page_view.zoom(1.25), QKeySequence.StandardKey.ZoomIn)
         self.act_zoom_out = action("zoom_out", lambda: self.page_view.zoom(0.8), QKeySequence.StandardKey.ZoomOut)
         self.act_zoom_fit = action("zoom_fit", self.page_view.fit, "Ctrl+0")
@@ -235,6 +245,13 @@ class MainWindow(QMainWindow):
         menu_pages.addSeparator()
         menu_pages.addActions([self.act_scale, self.act_shift, self.act_boxes, self.act_bleed])
 
+        menu_elements = tr.bind(self.menuBar().addMenu(""), "elements", "setTitle")
+        menu_elements.addActions([self.act_element, self.act_remove_elements])
+        menu_elements.addSeparator()
+        menu_elements.addActions([self.act_tab_sheets, self.act_bleed_tabs, self.act_remove_tabs])
+        menu_elements.addSeparator()
+        menu_elements.addActions([self.act_spine, self.act_marks, self.act_remove_marks])
+
         menu_view = tr.bind(self.menuBar().addMenu(""), "view", "setTitle")
         menu_view.addActions([self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit])
         menu_view.addSeparator()
@@ -259,7 +276,9 @@ class MainWindow(QMainWindow):
         self._doc_actions = [
             self.act_save, self.act_save_project, self.act_insert, self.act_images, self.act_rot_l,
             self.act_rot_r, self.act_delete, self.act_duplicate, self.act_blank, self.act_replace,
-            self.act_scale, self.act_shift, self.act_boxes, self.act_bleed,
+            self.act_scale, self.act_shift, self.act_boxes, self.act_bleed, self.act_element,
+            self.act_remove_elements, self.act_tab_sheets, self.act_bleed_tabs, self.act_remove_tabs,
+            self.act_spine, self.act_marks, self.act_remove_marks,
         ]
 
     def _set_language(self, code: str) -> None:
@@ -632,6 +651,89 @@ class MainWindow(QMainWindow):
         depth, ok = QInputDialog.getInt(self, self.tr_("from_bookmarks"), self.tr_("bookmark_depth"), 1, 1, 9)
         if ok:
             self.modify(lambda: self.doc.sections_from_bookmarks(depth))
+
+    # --- Elemente, Register, Rückentitel, Marken ----------------------------
+
+    def _context(self) -> elements.Context:
+        file = self.doc.path.name if self.doc and self.doc.path else ""
+        return elements.Context(job=self.job.name.text().strip(), file=file)
+
+    def add_element(self) -> None:
+        dialog = ElementDialog(self.tr_, self)
+        if dialog.exec():
+            pages = self._scope(dialog.scope.currentData())
+            element = dialog.element()
+            self.modify(lambda: elements.apply_element(self.doc, pages, element, self._context()))
+
+    def remove_elements(self) -> None:
+        pages = self._scope("selection")
+        self.modify(lambda: elements.remove_elements(self.doc, pages))
+
+    def _require_sections(self) -> bool:
+        if self.doc is not None and self.doc.sections():
+            return True
+        QMessageBox.information(self, self.tr_("sections"), self.tr_("no_sections"))
+        return False
+
+    def insert_tab_sheets(self) -> None:
+        if not self._require_sections():
+            return
+        dialog = TabSheetDialog(self.tr_, [m.name for m in self.catalog.media], self)
+        if not dialog.exec():
+            return
+        titles_path = dialog.titles.path()
+        titles = tabs.titles_from_text(Path(titles_path).read_text(encoding="utf-8")) if titles_path else None
+        result = {}
+
+        def run() -> None:
+            result["pages"] = tabs.insert_tabs_for_sections(self.doc, dialog.style(), titles)
+
+        if self.modify(run) and dialog.media.currentData():
+            # Medienbereiche hinter den Registerblättern verschieben sich; Tabs neu zuweisen
+            for index in result["pages"]:
+                self.media.add_range(index, index, dialog.media.currentData())
+
+    def bleed_tabs(self) -> None:
+        if not self._require_sections():
+            return
+        dialog = BleedTabDialog(self.tr_, self)
+        if dialog.exec():
+            style = dialog.style()
+            self.modify(lambda: tabs.apply_bleed_tabs(self.doc, style))
+
+    def remove_tabs(self) -> None:
+        self.modify(lambda: tabs.remove_tabs(self.doc))
+
+    def spine_text(self) -> None:
+        if self.doc is None:
+            return
+        media = self.media.default_media()
+        from ..core.media import Media
+
+        width = spine.spine_width_mm(self.doc.page_count, media or Media("default"),
+                                     self.job.sides.value().name != "SIMPLEX")
+        dialog = SpineDialog(self.tr_, max(width, 1.0), self)
+        if dialog.exec():
+            index = max(self.pages.currentRow(), 0)
+            kwargs = dict(font_size=dialog.size.value() or None, top_to_bottom=dialog.direction.currentData(),
+                          color_cmyk=dialog.color.value(),
+                          background_cmyk=dialog.bg_color.value() if dialog.background.isChecked() else None)
+            text, width_mm = dialog.text.text(), dialog.width.value()
+            self.modify(lambda: spine.add_spine_text(self.doc, index, text, width_mm, **kwargs))
+
+    def printer_marks(self) -> None:
+        dialog = MarksDialog(self.tr_, self)
+        if dialog.exec():
+            pages = self._scope(dialog.scope.currentData())
+            opts = dialog.options()
+            fin = self.finishing.finishing()
+            ctx = {"job": self.job.name.text().strip(), "file": self._context().file,
+                   "finishing": "-".join(v.value for v in (fin.staple, fin.punch, fin.fold) if v.value != "none")}
+            self.modify(lambda: marks.add_marks(self.doc, pages, opts, ctx))
+
+    def remove_marks(self) -> None:
+        pages = self._scope("all")
+        self.modify(lambda: marks.remove_marks(self.doc, pages))
 
     # --- Auftrag und Ausgabe ------------------------------------------------
 
