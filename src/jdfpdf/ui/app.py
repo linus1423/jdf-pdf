@@ -30,7 +30,10 @@ from ..core.media import MM, MediaCatalog
 from ..core.pdfdoc import BOXES, PdfDocument, Section
 from ..core.prepress import process_file, write_output
 from ..core.project import SUFFIX, Project
+from ..core.template import step_dict
+from ..core.pagerange import format_pages
 from ..core.render import render_page_media, render_pages
+from .actions_automation import AutomationActions
 from .actions_color import ColorActions
 from .actions_prepress import PrepressActions
 from .dialogs import BleedDialog, BoxesDialog, MediaCatalogDialog, ScaleDialog, ShiftDialog
@@ -111,7 +114,7 @@ class _TabLabel:
         self.tabs.setTabText(self.index, text)
 
 
-class MainWindow(ColorActions, PrepressActions, QMainWindow):
+class MainWindow(ColorActions, PrepressActions, AutomationActions, QMainWindow):
     def __init__(self, settings: QSettings | None = None, catalog_path: Path | None = None) -> None:
         super().__init__()
         self.settings = settings or QSettings("jdfpdf", "jdfpdf")
@@ -119,10 +122,12 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
         self.catalog_path = catalog_path
         self.spot_library_path = Path(catalog_path).with_name("spots.json") if catalog_path else None
         self.press_profiles_path = Path(catalog_path).with_name("presses.json") if catalog_path else None
+        self.printers_path = Path(catalog_path).with_name("printers.json") if catalog_path else None
         self.catalog = MediaCatalog.load(catalog_path)
         self.doc: PdfDocument | None = None
         self.view_doc: PdfDocument | None = None  # angezeigtes Dokument (Einzelseiten oder Bögen)
-        self.history: History[bytes] = History()
+        self.history: History[tuple[bytes, list]] = History()
+        self.steps: list[dict] = []  # aufgezeichnete Schritte für Vorlagen
 
         self.pages = PageList(self._reorder, self.insert_files)
         self.pages.currentRowChanged.connect(self._show_page)
@@ -267,6 +272,7 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
 
         color_actions = self._build_color_menu(action)
         prepress_actions = self._build_prepress_menu(action)
+        automation_actions = self._build_automation_menu(action)
 
         menu_view = tr.bind(self.menuBar().addMenu(""), "view", "setTitle")
         menu_view.addActions([self.act_zoom_in, self.act_zoom_out, self.act_zoom_fit])
@@ -295,6 +301,7 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
             self.act_scale, self.act_shift, self.act_boxes, self.act_bleed, self.act_element,
             self.act_remove_elements, self.act_tab_sheets, self.act_bleed_tabs, self.act_remove_tabs,
             self.act_spine, self.act_marks, self.act_remove_marks, self.act_repeat, *color_actions, *prepress_actions,
+            *automation_actions,
         ]
 
     def _set_language(self, code: str) -> None:
@@ -304,20 +311,28 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
 
     # --- Bearbeiten mit Rückgängig ------------------------------------------
 
-    def modify(self, func) -> bool:
-        """Änderung am Dokument ausführen; bei Erfolg rückgängig machbar, bei Fehler zurückgesetzt."""
+    def modify(self, func, step: dict | list[dict] | None = None) -> bool:
+        """Änderung am Dokument ausführen; bei Erfolg rückgängig machbar, bei Fehler zurückgesetzt.
+
+        ``step`` beschreibt die Änderung für die Aufzeichnung als Vorlage (``core.template``).
+        """
         if self.doc is None:
             return False
-        snapshot = self.doc.to_bytes()
+        snapshot = (self.doc.to_bytes(), list(self.steps))
         try:
             func()
         except Exception as exc:
-            self._restore(snapshot)
+            self._restore(snapshot[0])
             QMessageBox.critical(self, self.tr_("error"), str(exc))
             return False
         self.history.push(snapshot)
+        if step:
+            self.steps.extend(step if isinstance(step, list) else [step])
         self._refresh()
         return True
+
+    def _pages_spec(self, pages: list[int]) -> str:
+        return "all" if self.doc and pages == list(range(self.doc.page_count)) else format_pages(pages)
 
     def _restore(self, data: bytes) -> None:
         path = self.doc.path if self.doc else None
@@ -327,17 +342,19 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
     def undo(self) -> None:
         if self.doc is None:
             return
-        state = self.history.undo(self.doc.to_bytes())
+        state = self.history.undo((self.doc.to_bytes(), list(self.steps)))
         if state is not None:
-            self._restore(state)
+            self._restore(state[0])
+            self.steps = state[1]
             self._refresh()
 
     def redo(self) -> None:
         if self.doc is None:
             return
-        state = self.history.redo(self.doc.to_bytes())
+        state = self.history.redo((self.doc.to_bytes(), list(self.steps)))
         if state is not None:
-            self._restore(state)
+            self._restore(state[0])
+            self.steps = state[1]
             self._refresh()
 
     # --- Anzeige ------------------------------------------------------------
@@ -497,6 +514,7 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
         else:
             self.doc = PdfDocument.open(path)
         self.history.clear()
+        self.steps = []
         self.job.name.setText(path.stem)
         self.media.clear_ranges()
         self.output.warning.clear()
@@ -570,6 +588,7 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
         self.doc = project.document
         self.doc.path = path.with_suffix(".pdf")
         self.history.clear()
+        self.steps = []
         self.apply_ticket(project.ticket)
         self.output.set_options(project.output)
         self.layout_panel.set_imposition(project.imposition)
@@ -603,12 +622,13 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
     def _rotate(self, degrees: int) -> None:
         selected = self.pages.selected_pages()
         if selected:
-            self.modify(lambda: [self.doc.rotate_page(i, degrees) for i in selected])
+            self.modify(lambda: [self.doc.rotate_page(i, degrees) for i in selected],
+                        step_dict("rotate", degrees=degrees, pages=self._pages_spec(selected)))
 
     def _delete(self) -> None:
         selected = self.pages.selected_pages()
         if self.doc and selected and len(selected) < self.doc.page_count:
-            self.modify(lambda: self.doc.delete_pages(selected))
+            self.modify(lambda: self.doc.delete_pages(selected), step_dict("delete", pages=self._pages_spec(selected)))
 
     def _reorder(self, order: list[int]) -> None:
         self.modify(lambda: self.doc.reorder(order))
@@ -616,11 +636,13 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
     def duplicate_pages(self) -> None:
         selected = self.pages.selected_pages()
         if selected:
-            self.modify(lambda: self.doc.duplicate_pages(selected))
+            self.modify(lambda: self.doc.duplicate_pages(selected),
+                        step_dict("duplicate", pages=self._pages_spec(selected)))
 
     def insert_blank(self) -> None:
         at = self._insert_position()
-        self.modify(lambda: self.doc.insert_blank(self.doc.page_count if at is None else at))
+        self.modify(lambda: self.doc.insert_blank(self.doc.page_count if at is None else at),
+                    step_dict("insert_blank", at="end" if at is None else at))
 
     def replace_page(self) -> None:
         selected = self.pages.selected_pages()
@@ -646,7 +668,9 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
         if dialog.exec():
             pages = self._scope(dialog.scope.currentData())
             w, h, mode = dialog.width.value() * MM, dialog.height.value() * MM, dialog.mode.value()
-            self.modify(lambda: [geometry.scale_page(self.doc, i, w, h, mode) for i in pages])
+            self.modify(lambda: [geometry.scale_page(self.doc, i, w, h, mode) for i in pages],
+                        step_dict("scale", width_mm=dialog.width.value(), height_mm=dialog.height.value(),
+                                  mode=mode.name, pages=self._pages_spec(pages)))
 
     def shift_content(self) -> None:
         dialog = ShiftDialog(self.tr_, self)
@@ -660,7 +684,8 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
                     sign = -1 if (mirror and i % 2 == 1) else 1
                     geometry.shift_content(self.doc, i, sign * dx, dy)
 
-            self.modify(run)
+            self.modify(run, step_dict("shift", dx_mm=dialog.dx.value(), dy_mm=dialog.dy.value(), mirror=mirror,
+                                       pages=self._pages_spec(pages)))
 
     def edit_boxes(self) -> None:
         if self.doc is None:
@@ -679,14 +704,15 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
         if dialog.exec():
             pages = self._scope(dialog.scope.currentData())
             bleed = dialog.bleed.value() * MM
-            self.modify(lambda: [self.doc.add_bleed(i, bleed) for i in pages])
+            self.modify(lambda: [self.doc.add_bleed(i, bleed) for i in pages],
+                        step_dict("add_bleed", mm=dialog.bleed.value(), pages=self._pages_spec(pages)))
 
     def repeat_pages(self) -> None:
         count, ok = QInputDialog.getInt(self, self.tr_("repeat_pages"), self.tr_("repeat_count"), 50, 1, 10000)
         if ok:
             pages = self._scope("selection")
             if pages == list(range(self.doc.page_count)):
-                self.modify(lambda: impose.repeat_pages(self.doc, count))
+                self.modify(lambda: impose.repeat_pages(self.doc, count), step_dict("repeat", times=count))
             else:
                 def run() -> None:
                     for index in reversed(pages):
@@ -704,7 +730,7 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
         name, ok = QInputDialog.getText(self, self.tr_("new_section"), self.tr_("section_name"))
         if ok and name:
             sections = [s for s in self.doc.sections() if s.page != selected[0]] + [Section(name, selected[0])]
-            self.modify(lambda: self.doc.set_sections(sections))
+            self.modify(lambda: self.doc.set_sections(sections), self._sections_step(sections))
 
     def rename_section(self, row: int) -> None:
         sections = self.doc.sections()
@@ -712,19 +738,24 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
                                         text=sections[row].title)
         if ok and name:
             sections[row] = Section(name, sections[row].page)
-            self.modify(lambda: self.doc.set_sections(sections))
+            self.modify(lambda: self.doc.set_sections(sections), self._sections_step(sections))
 
     def delete_section(self, row: int) -> None:
         sections = self.doc.sections()
         del sections[row]
-        self.modify(lambda: self.doc.set_sections(sections))
+        self.modify(lambda: self.doc.set_sections(sections), self._sections_step(sections))
+
+    @staticmethod
+    def _sections_step(sections: list[Section]) -> dict:
+        return step_dict("sections", sections=[{"title": s.title, "page": s.page + 1} for s in sections])
 
     def sections_from_bookmarks(self) -> None:
         if self.doc is None:
             return
         depth, ok = QInputDialog.getInt(self, self.tr_("from_bookmarks"), self.tr_("bookmark_depth"), 1, 1, 9)
         if ok:
-            self.modify(lambda: self.doc.sections_from_bookmarks(depth))
+            self.modify(lambda: self.doc.sections_from_bookmarks(depth),
+                        step_dict("sections_from_bookmarks", level=depth))
 
     # --- Elemente, Register, Rückentitel, Marken ----------------------------
 
@@ -737,11 +768,13 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
         if dialog.exec():
             pages = self._scope(dialog.scope.currentData())
             element = dialog.element()
-            self.modify(lambda: elements.apply_element(self.doc, pages, element, self._context()))
+            self.modify(lambda: elements.apply_element(self.doc, pages, element, self._context()),
+                        step_dict("element", element=element, pages=self._pages_spec(pages)))
 
     def remove_elements(self) -> None:
         pages = self._scope("selection")
-        self.modify(lambda: elements.remove_elements(self.doc, pages))
+        self.modify(lambda: elements.remove_elements(self.doc, pages),
+                    step_dict("remove_elements", pages=self._pages_spec(pages)))
 
     def _require_sections(self) -> bool:
         if self.doc is not None and self.doc.sections():
@@ -762,7 +795,8 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
         def run() -> None:
             result["pages"] = tabs.insert_tabs_for_sections(self.doc, dialog.style(), titles)
 
-        if self.modify(run) and dialog.media.currentData():
+        step = step_dict("tab_sheets", style=dialog.style(), titles=titles, media=dialog.media.currentData())
+        if self.modify(run, step) and dialog.media.currentData():
             # Medienbereiche hinter den Registerblättern verschieben sich; Tabs neu zuweisen
             for index in result["pages"]:
                 self.media.add_range(index, index, dialog.media.currentData())
@@ -773,10 +807,10 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
         dialog = BleedTabDialog(self.tr_, self)
         if dialog.exec():
             style = dialog.style()
-            self.modify(lambda: tabs.apply_bleed_tabs(self.doc, style))
+            self.modify(lambda: tabs.apply_bleed_tabs(self.doc, style), step_dict("bleed_tabs", style=style))
 
     def remove_tabs(self) -> None:
-        self.modify(lambda: tabs.remove_tabs(self.doc))
+        self.modify(lambda: tabs.remove_tabs(self.doc), step_dict("remove_tabs"))
 
     def spine_text(self) -> None:
         if self.doc is None:
@@ -793,7 +827,8 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
                           color_cmyk=dialog.color.value(),
                           background_cmyk=dialog.bg_color.value() if dialog.background.isChecked() else None)
             text, width_mm = dialog.text.text(), dialog.width.value()
-            self.modify(lambda: spine.add_spine_text(self.doc, index, text, width_mm, **kwargs))
+            self.modify(lambda: spine.add_spine_text(self.doc, index, text, width_mm, **kwargs),
+                        step_dict("spine", page=str(index + 1), text=text, width_mm=width_mm, **kwargs))
 
     def printer_marks(self) -> None:
         dialog = MarksDialog(self.tr_, self)
@@ -803,11 +838,12 @@ class MainWindow(ColorActions, PrepressActions, QMainWindow):
             fin = self.finishing.finishing()
             ctx = {"job": self.job.name.text().strip(), "file": self._context().file,
                    "finishing": "-".join(v.value for v in (fin.staple, fin.punch, fin.fold) if v.value != "none")}
-            self.modify(lambda: marks.add_marks(self.doc, pages, opts, ctx))
+            self.modify(lambda: marks.add_marks(self.doc, pages, opts, ctx),
+                        step_dict("marks", options=opts, pages=self._pages_spec(pages)))
 
     def remove_marks(self) -> None:
         pages = self._scope("all")
-        self.modify(lambda: marks.remove_marks(self.doc, pages))
+        self.modify(lambda: marks.remove_marks(self.doc, pages), step_dict("remove_marks", pages="all"))
 
     # --- Auftrag und Ausgabe ------------------------------------------------
 

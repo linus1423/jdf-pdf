@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 from ..core import color, imagefix, spot
 from ..core.jdf import Sides
 from ..core.pagerange import format_pages, parse_pages
+from ..core.template import step_dict
 from .dialogs_color import ImageAdjustDialog, SplitDialog, SpotColorsDialog, SpotLibraryDialog
 
 
@@ -58,7 +59,7 @@ class ColorActions:
         def run() -> None:
             result["r"] = color.convert_to_gray(self.doc, pages)
 
-        if self.modify(run):
+        if self.modify(run, step_dict("gray", pages=self._pages_spec(pages))):
             report = result["r"]
             message = self.tr_("gray_done", pages=report.pages, images=report.images)
             if report.skipped:
@@ -99,7 +100,8 @@ class ColorActions:
         dialog = ImageAdjustDialog(self.tr_, self.doc, index, self)
         if dialog.exec():
             adj, paths = dialog.adjustment(), dialog.paths()
-            self.modify(lambda: imagefix.adjust_images(self.doc, index, adj, paths))
+            self.modify(lambda: imagefix.adjust_images(self.doc, index, adj, paths),
+                        step_dict("image_adjust", adjust=adj, pages=str(index + 1), images=paths))
 
     def spot_colors(self) -> None:
         if self.doc is None:
@@ -107,7 +109,7 @@ class ColorActions:
         library = self._spot_library()
         dialog = SpotColorsDialog(self.tr_, self.doc, library, self)
         if dialog.exec():
-            self.modify(lambda: dialog.apply(self.doc))
+            self.modify(lambda: dialog.apply(self.doc), dialog.steps())
         if dialog.library_changed:
             self._guard(lambda: library.save(self.spot_library_path))
 
@@ -119,4 +121,5 @@ class ColorActions:
             if self.doc is not None and spot.spot_colors(self.doc):
                 answer = QMessageBox.question(self, self.tr_("spot_library"), self.tr_("spot_apply_library"))
                 if answer == QMessageBox.StandardButton.Yes:
-                    self.modify(lambda: library.apply(self.doc))
+                    self.modify(lambda: library.apply(self.doc),
+                                step_dict("spot_library", path=str(self.spot_library_path or "") or None))

@@ -241,3 +241,60 @@ def test_prepress_menu(win, tmp_path):
     win.output.ppf.setChecked(False)
     win.load(tmp_path / "p.jdfproj")
     assert win.output.ppf.isChecked() and win.output.preflight.isChecked()
+
+
+def test_automation_menu(win, tmp_path, monkeypatch):
+    from conftest import make_pdf
+    from jdfpdf.core import printing
+    from jdfpdf.core.template import Template
+    from jdfpdf.ui import actions_automation
+    from jdfpdf.ui.dialogs_automation import HotfolderDialog, PrinterProfilesDialog, StepsDialog
+
+    win.load(make_pdf(tmp_path / "a.pdf", pages=4))
+    win.pages.item(0).setSelected(True)
+    win._rotate(90)
+    win.pages.item(0).setSelected(True)
+    win.duplicate_pages()
+    assert [s["op"] for s in win.steps] == ["rotate", "duplicate"]
+    win.undo()
+    assert [s["op"] for s in win.steps] == ["rotate"]
+    win.redo()
+    assert len(win.steps) == 2
+
+    path = win.save_template(str(tmp_path / "vorlage"))
+    assert path.suffix == ".jdftpl"
+    template = Template.load(path)
+    assert template.steps[0] == {"op": "rotate", "degrees": 90, "pages": "1"}
+
+    win.load(make_pdf(tmp_path / "b.pdf", pages=4))
+    assert win.steps == []
+    assert win.apply_template_to_doc(template)
+    assert win.doc.page_rotation(0) == 90 and win.doc.page_count == 5
+
+    steps = StepsDialog(win.tr_, win.steps)
+    steps.list.item(0).setSelected(True)
+    steps._remove()
+    assert [s["op"] for s in steps.steps] == ["duplicate"]
+
+    hot = tmp_path / "hot"
+    hot.mkdir()
+    profile = printing.PrinterProfile("Hot", printing.PrinterKind.HOTFOLDER, str(hot))
+    printing.save_printers([profile], win.printers_path)
+    dialog = PrinterProfilesDialog(win.tr_, win.printers(), ["Q1"])
+    assert dialog.profiles()[0].target == str(hot)
+    result = win.send_to_printer(win.printers()[0])
+    assert result is not None and any(hot.iterdir())
+
+    folder = HotfolderDialog(win.tr_, win.printers(), win.catalog)
+    folder.template.edit.setText(str(path))
+    folder.inbox.edit.setText(str(tmp_path / "in"))
+    folder.outbox.edit.setText(str(tmp_path / "out"))
+    folder.toggle()
+    assert folder.folder is not None
+    make_pdf(tmp_path / "in" / "c.pdf")
+    folder.poll()
+    folder.poll()
+    assert (tmp_path / "out" / "c.pdf").exists()
+    folder.toggle()
+    assert folder.folder is None
+    assert actions_automation.SUFFIX == ".jdftpl"

@@ -52,6 +52,12 @@ class OutputOptions:
     ppf_profile: "PressProfile | None" = None  # None: erstes Standardprofil
     preflight: bool = False  # Preflight-Bericht ``<name>_preflight.html`` schreiben
     language: str = "de"  # Sprache für Berichte
+    finishing_jdf: bool = False  # eigenes JDF für die Weiterverarbeitung (``<name>_finishing.jdf``)
+    barcode_text: str = "{job}-{page}"  # muss zum Barcode der Druckmarken passen
+
+    @property
+    def any_output(self) -> bool:
+        return self.any or self.finishing_jdf
 
     @property
     def any(self) -> bool:
@@ -66,6 +72,7 @@ class OutputResult:
     pdfx_version: str | None = None
     warnings: list[str] = field(default_factory=list)
     preflight: object | None = None  # PreflightReport, falls geprüft
+    ticket: JobTicket | None = None  # das geschriebene Ticket (vervollständigt)
 
 
 def blocks_embedding(doc: PdfDocument) -> str | None:
@@ -94,11 +101,15 @@ def ticketing_bytes(doc: PdfDocument, ticket: JobTicket) -> bytes:
 def write_output(doc: PdfDocument, ticket: JobTicket, pdf_path: Path, options: OutputOptions,
                  imposition: Imposition | None = None) -> OutputResult:
     """PDF samt JDF gemäß ``options`` schreiben; mit ``imposition`` wird vorher ausgeschossen."""
-    if not options.any:
+    if not options.any_output:
         raise ValueError("Keine Ausgabe gewählt")
     pdf_path = Path(pdf_path)
     warnings = []
+    layout = []
     if imposition is not None and imposition.layout != Layout.NONE:
+        from .impose import plan
+
+        layout = plan(doc, imposition)
         doc = impose(doc, imposition)
         if ticket.media_ranges:
             # Seitenbereiche beziehen sich auf die Einzelseiten, nicht auf die Bögen
@@ -107,7 +118,7 @@ def write_output(doc: PdfDocument, ticket: JobTicket, pdf_path: Path, options: O
         if ticket.media is not None and ticket.media.name == "default":
             ticket = replace(ticket, media=None)
     ticket = complete_ticket(doc, replace(ticket, pdf_url=pdf_path.name))
-    result = OutputResult(pdf=pdf_path, pdfx_version=doc.pdfx_version(), warnings=warnings)
+    result = OutputResult(pdf=pdf_path, pdfx_version=doc.pdfx_version(), warnings=warnings, ticket=ticket)
 
     if options.preflight:
         from .preflight import Severity, preflight, write_report
@@ -161,6 +172,14 @@ def write_output(doc: PdfDocument, ticket: JobTicket, pdf_path: Path, options: O
             target = pdf_path.with_name(name)
             target.write_bytes(data)
             result.extra_files.append(target)
+    if options.finishing_jdf:
+        from .finishing_jdf import SUFFIX, build_finishing_jdf, sheet_ids
+
+        duplex = imposition.duplex if layout else ticket.sides != Sides.SIMPLEX
+        ids = sheet_ids(doc, ticket, options.barcode_text, duplex, pdf_path.name)
+        target = pdf_path.with_name(pdf_path.stem + SUFFIX)
+        target.write_bytes(build_finishing_jdf(ticket, ids, layout))
+        result.extra_files.append(target)
     if options.sidecar:
         sidecar = pdf_path.with_suffix(".jdf")
         sidecar.write_bytes(build_jdf(ticket))

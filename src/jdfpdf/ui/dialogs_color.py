@@ -205,6 +205,21 @@ class SpotColorsDialog(QDialog):
                 self.library_changed = True
         QMessageBox.information(self, self.tr_("spot_title"), self.tr_("spot_saved_library"))
 
+    def steps(self) -> list[dict]:
+        """Änderungen als Vorlagenschritte (``core.template``)."""
+        result = [{"op": "spot_merge", "source": s, "target": t} for s, t in self.merges]
+        merged = {source for source, _ in self.merges}
+        for row, color in enumerate(self.colors):
+            if color.name in merged:
+                continue
+            name = self.table.item(row, 0).text().strip()
+            if name and name != color.name:
+                result.append({"op": "spot_rename", "old": color.name, "new": name})
+            cmyk = _read_cmyk(self.table, row, 1)
+            if cmyk is not None and cmyk != color.cmyk and not color.in_devicen:
+                result.append({"op": "spot_alternate", "name": name or color.name, "cmyk": list(cmyk)})
+        return result
+
     def apply(self, doc: PdfDocument) -> None:
         """Änderungen der Tabelle auf das Dokument anwenden."""
         merged = {source for source, _ in self.merges}

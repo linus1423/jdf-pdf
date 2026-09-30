@@ -117,6 +117,8 @@ def _output_from_dict(data: dict) -> OutputOptions:
         ppf=data.get("ppf", False),
         ppf_embed=data.get("ppf_embed", False),
         preflight=data.get("preflight", False),
+        finishing_jdf=data.get("finishing_jdf", False),
+        barcode_text=data.get("barcode_text", "{job}-{page}"),
         language=data.get("language", "de"),
         ppf_profile=_profile(data.get("ppf_profile")),
     )
