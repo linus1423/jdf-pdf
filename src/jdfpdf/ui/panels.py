@@ -231,3 +231,59 @@ class OutputPanel(QWidget):
             ticketing=self.ticketing.isChecked(),
             pdfx_policy=PdfxPolicy.EMBED_ANYWAY if self.pdfx_anyway.isChecked() else PdfxPolicy.KEEP,
         )
+
+
+class SectionsPanel(QWidget):
+    """Strukturansicht: Abschnitte des Dokuments (oberste Lesezeichenebene)."""
+
+    section_clicked = Signal(int, int)  # erste, letzte Seite
+    new_requested = Signal()
+    rename_requested = Signal(int)
+    delete_requested = Signal(int)
+    bookmarks_requested = Signal()
+
+    def __init__(self, tr: Translator) -> None:
+        from PySide6.QtWidgets import QTreeWidget
+
+        super().__init__()
+        self.tr_ = tr
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.itemClicked.connect(self._clicked)
+        self.tree.itemDoubleClicked.connect(lambda item, _col: self.rename_requested.emit(self._row(item)))
+        new = tr.bind(QPushButton(clicked=self.new_requested), "new_section")
+        rename = tr.bind(QPushButton(clicked=lambda: self._emit_current(self.rename_requested)), "rename")
+        delete = tr.bind(QPushButton(clicked=lambda: self._emit_current(self.delete_requested)), "remove")
+        bookmarks = tr.bind(QPushButton(clicked=self.bookmarks_requested), "from_bookmarks")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.addWidget(self.tree)
+        row = QHBoxLayout()
+        for button in (new, rename, delete):
+            row.addWidget(button)
+        layout.addLayout(row)
+        layout.addWidget(bookmarks)
+        self._ranges: list[tuple[int, int]] = []
+
+    def set_sections(self, sections, page_count: int) -> None:
+        from PySide6.QtWidgets import QTreeWidgetItem
+
+        self.tree.clear()
+        self._ranges = []
+        for i, section in enumerate(sections):
+            last = (sections[i + 1].page - 1) if i + 1 < len(sections) else page_count - 1
+            self._ranges.append((section.page, last))
+            span = f"{section.page + 1}" if last == section.page else f"{section.page + 1}–{last + 1}"
+            self.tree.addTopLevelItem(QTreeWidgetItem([f"{section.title}  ({span})"]))
+
+    def _row(self, item) -> int:
+        return self.tree.indexOfTopLevelItem(item)
+
+    def _clicked(self, item, _col) -> None:
+        first, last = self._ranges[self._row(item)]
+        self.section_clicked.emit(first, last)
+
+    def _emit_current(self, signal) -> None:
+        item = self.tree.currentItem()
+        if item is not None:
+            signal.emit(self._row(item))

@@ -28,3 +28,14 @@ def render_page(pdf_bytes: bytes, index: int, scale: float = 1.5) -> Image.Image
         return page.render(scale=scale).to_pil()
     finally:
         doc.close()
+
+
+def render_page_media(pdf_bytes: bytes, index: int, scale: float = 1.5) -> Image.Image:
+    """Seite über die ganze MediaBox rendern (für die Anzeige der Seitenboxen)."""
+    doc = pdfium.PdfDocument(pdf_bytes)
+    try:
+        page = doc[index]
+        page.set_cropbox(*page.get_mediabox())
+        return page.render(scale=scale).to_pil()
+    finally:
+        doc.close()

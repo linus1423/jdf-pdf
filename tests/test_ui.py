@@ -58,3 +58,63 @@ def test_ticket_from_panels(win, sample_pdf, tmp_path):
     res = write_output(win.doc, ticket, tmp_path / "out.pdf", win.output.options())
     assert len(res.extra_files) == 2
     assert b"RunIndex=\"1 2\"" in PdfDocument.open(tmp_path / "out.pdf").attachment_data("job.jdf")
+
+
+def test_undo_redo_and_composition(win, sample_pdf, tmp_path):
+    win.load(sample_pdf)
+    win.pages.item(0).setSelected(True)
+    win.duplicate_pages()
+    assert win.doc.page_count == 4
+    win.insert_blank()
+    assert win.doc.page_count == 5
+    win.undo()
+    win.undo()
+    assert win.doc.page_count == 3
+    win.redo()
+    assert win.doc.page_count == 4
+    from conftest import make_pdf
+    extra = make_pdf(tmp_path / "Anhang.pdf", pages=2)
+    win.insert_files([extra], at=None)
+    assert win.doc.page_count == 6
+    assert [s.title for s in win.doc.sections()] == ["Anhang"]
+    assert win.sections.tree.topLevelItemCount() == 1
+
+
+def test_failed_modify_restores(win, sample_pdf, monkeypatch):
+    win.load(sample_pdf)
+    monkeypatch.setattr(QtWidgets.QMessageBox, "critical", lambda *a, **k: None)
+
+    def broken():
+        win.doc.delete_pages([0])
+        raise RuntimeError("kaputt")
+
+    assert not win.modify(broken)
+    assert win.doc.page_count == 3
+    assert not win.history.can_undo
+
+
+def test_project_save_load(win, sample_pdf, tmp_path):
+    win.load(sample_pdf)
+    win.job.copies.setValue(9)
+    win.finishing.staple.set_value(Staple.TOP_LEFT)
+    win.output.ticketing.setChecked(True)
+    win.project().save(tmp_path / "p.jdfproj")
+    win.job.copies.setValue(1)
+    win.output.ticketing.setChecked(False)
+    win.load(tmp_path / "p.jdfproj")
+    assert win.job.copies.value() == 9
+    assert win.finishing.staple.value() == Staple.TOP_LEFT
+    assert win.output.ticketing.isChecked()
+    assert win.doc.page_count == 3
+
+
+def test_page_view_shows_boxes(win, sample_pdf):
+    win.load(sample_pdf)
+    win.modify(lambda: win.doc.add_bleed(0, 10))
+    win._show_page(0)
+    assert win.page_view._page_item is not None
+    assert any(item.toolTip() == "BleedBox" for item in win.page_view._box_items)
+    guide = win.page_view.add_guide(True, 50)
+    assert guide in win.page_view.guides
+    win.page_view.clear_guides()
+    assert not win.page_view.guides
